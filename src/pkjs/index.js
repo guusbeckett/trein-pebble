@@ -62,8 +62,6 @@ Pebble.addEventListener("ready", function(e) {
 });
 
 Pebble.addEventListener("appmessage", function(e) {
-  console.log("Received message from watch: " + JSON.stringify(e.payload));
-  
   if (e.payload.REQUEST_STATIONS) {
     requestLocationAndFetchStations();
   }
@@ -103,7 +101,6 @@ function requestLocationAndFetchStations() {
 function locationSuccess(pos) {
   var lat = pos.coords.latitude;
   var lng = pos.coords.longitude;
-  console.log("Lat, lng" + lat + lng);
   fetchNearbyStations(lat, lng);
 }
 
@@ -262,6 +259,7 @@ function processTripData(data) {
     }
     
     if (actualDepartureTime == undefined){
+      console.log('Actual departure time is undefined, value gotten from NS API is:');
       console.log(trips[sendIndex].legs[0].origin.actualDepartureTime);
     }
     
@@ -270,15 +268,7 @@ function processTripData(data) {
     var currentIndex = sendIndex;
     var actualDepartureTimeEpoch = convertIsoDateToEpoch(actualDepartureTime);
 
-    console.log("TRIP_INDEX: " + currentIndex);
-    console.log("TRIP_PLANNED_DEPARTURE_TIME: " + plannedDepartureTime);
-    console.log("TRIP_DEPARTURE_TIME_EPOCH: " + actualDepartureTimeEpoch);
-    console.log("TRIP_PLANNED_ARRIVAL_TIME: " + plannedArrivalTime);
-    console.log("TRIP_ARRIVAL_TIME: " + actualArrivalTime);
-    console.log("TRIP_TRANSFERS: " + tripTransfers);
-    console.log("TRIP_PLATFORM: " + departurePlatform);
-    console.log("TRIP_DELAY: " + tripDelay);
-    console.log("TRIP_COUNT: " + trips.length);
+
     Pebble.sendAppMessage({
       "TRIP_INDEX": currentIndex,
       "TRIP_PLANNED_DEPARTURE_TIME": plannedDepartureTime,
@@ -306,7 +296,6 @@ function processTripData(data) {
 
 function fetchNearbyStations(lat, lng) {
   var url = BASE_API_URL + NEAREST_STATIONS_PATH + "?lat=" + lat + "&lng=" + lng + "&limit=8&includeNonPlannableStations=false";
-  console.log("Url: "+ url);
   sendRequest(url, processStationData);
 }
 

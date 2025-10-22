@@ -182,7 +182,6 @@ static void prv_trip_leg_layer_update_proc(Layer *layer, GContext *ctx) {
 static void prv_update_confirmation_display() {
   snprintf(s_app.buffers.platform_buffer, sizeof(s_app.buffers.platform_buffer), "Platform %s", s_app.trips.platform[s_app.journey.selected_trip_index]);
   text_layer_set_text(s_app.conf_ui.platform_layer, s_app.buffers.platform_buffer);
-  APP_LOG(APP_LOG_LEVEL_INFO, "s_trip_departures[s_selected_trip_index]: %d", s_app.trips.departures[s_app.journey.selected_trip_index]);
   if (strncmp (s_app.trips.delay[s_app.journey.selected_trip_index],"Cancelled",9) == 0) {
     snprintf(s_app.buffers.delay_buffer, sizeof(s_app.buffers.delay_buffer), "%s", "");
     text_layer_set_text(s_app.conf_ui.delay_layer, s_app.buffers.delay_buffer);
