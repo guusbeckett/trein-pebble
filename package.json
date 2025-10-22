@@ -1,0 +1,68 @@
+{
+  "name": "Trein",
+  "author": "Guus H. Beckett",
+  "description": "A Pebble watchapp that shows a countdown to your next train, train times and platforms",
+  "version": "1.0.0",
+  "keywords": [
+    "pebble-app",
+    "pebble",
+    "transport",
+    "ns",
+    "nederlandse-spoorwegen",
+    "nederland",
+    "netherlands",
+    "commute",
+    "train"
+  ],
+  "private": true,
+  "dependencies": {},
+  "pebble": {
+    "displayName": "Trein",
+    "uuid": "d0451463-ab5c-48c9-8278-95a4085b0ffe",
+    "sdkVersion": "3",
+    "enableMultiJS": true,
+    "targetPlatforms": [
+      "aplite",
+      "basalt",
+      "chalk",
+      "diorite",
+      "emery",
+      "flint"
+    ],
+    "watchapp": {
+      "watchface": false
+    },
+    "messageKeys": [
+      "STATION_INDEX",
+      "STATION_NAME",
+      "STATION_CODE",
+      "STATION_COUNT",
+      "REQUEST_STATIONS",
+      "START_STATION_CODE",
+      "DEST_STATION_CODE",
+      "TRIP_INDEX",
+      "TRIP_PLANNED_DEPARTURE_TIME",
+      "TRIP_DEPARTURE_TIME_EPOCH",
+      "TRIP_PLANNED_ARRIVAL_TIME",
+      "TRIP_ARRIVAL_TIME",
+      "TRIP_TRANSFERS",
+      "TRIP_COUNT",
+      "TRIP_PLATFORM",
+      "TRIP_DELAY",
+      "ERROR"
+    ],
+    "resources": {
+        "media": [{
+          "menuIcon": true,
+          "type": "png",
+          "name": "IMAGE_MENU_ICON",
+          "file": "images/icon.png"
+        }]
+      },
+    "configurable": "config.html",
+    "capabilities": [
+      "location",
+      "configurable"
+    ]
+  }
+}

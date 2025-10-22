@@ -1,0 +1,125 @@
+<!-- 
+/* 
+ * This file is part of the Trein Pebble app distribution (https://github.com/guusbeckett/trein-pebble).
+ * Copyright (c) 2025 Guus Beckett.
+ * 
+ * This program is free software: you can redistribute it and/or modify  
+ * it under the terms of the GNU General Public License as published by  
+ * the Free Software Foundation, version 3.
+ *
+ * This program is distributed in the hope that it will be useful, but 
+ * WITHOUT ANY WARRANTY; without even the implied warranty of 
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU 
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License 
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ */ 
+-->
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Trein Configuration</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      padding: 10px;
+      background-color: #fff;
+      color: #000;
+    }
+
+    a {
+      color: #0000EE;
+    }
+
+    .item {
+      margin-bottom: 15px;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 5px;
+    }
+
+    input {
+      width: 95%;
+      padding: 5px;
+      border: 1px solid #ccc;
+      border-radius: 3px;
+      background-color: #fff;
+      color: #000;
+    }
+
+    button {
+      padding: 10px;
+      border: 0;
+      background: #000;
+      color: #fff;
+      border-radius: 3px;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      body {
+        background-color: #121212;
+        color: #eee;
+      }
+
+      a {
+        color: #bb86fc;
+      }
+
+      input {
+        background-color: #333;
+        color: #eee;
+        border-color: #555;
+      }
+
+      button {
+        background: #bb86fc;
+        color: #121212;
+      }
+    }
+  </style>
+</head>
+<body>
+  <h1>Trein Configuration</h1>
+  You can register here to request a free API key: <a href="https://apiportal.ns.nl"> apiportal.ns.nl </a>
+  <br><br>
+  <div class="item">
+    <label for="api_key_input">NS API Key</label>
+    <input type="text" id="api_key_input" placeholder="Enter your personal API key">
+  </div>
+  <button id="save_button">Save</button>
+
+  <script>
+    function getUrlParams() {
+      var params = {};
+      var parts = window.location.search.substring(1).split('&');
+      for (var i = 0; i < parts.length; i++) {
+        var nv = parts[i].split('=');
+        if (!nv[0]) continue;
+        params[nv[0]] = nv[1] || true;
+      }
+      return params;
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+      var params = getUrlParams();
+      if (params.api_key) {
+        document.getElementById('api_key_input').value = decodeURIComponent(params.api_key);
+      }
+    });
+
+    document.getElementById('save_button').addEventListener('click', function() {
+      var apiKey = document.getElementById('api_key_input').value;
+      
+      var settings = {
+        'api_key': apiKey
+      };
+      
+      var location = 'pebblejs://close#' + encodeURIComponent(JSON.stringify(settings));
+      document.location = location;
+    });
+  </script>
+</body>
+</html>
