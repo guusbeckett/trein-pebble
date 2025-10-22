@@ -48,7 +48,8 @@ To use this app, you need:
 
 ### Building from Source
 
-This is a Pebble SDK 3 project. To build:
+This is a Pebble SDK 3 project. First install the [Pebble SDK](https://developer.repebble.com/sdk/)
+To build:
 
 ```bash
 pebble build
