@@ -1,4 +1,4 @@
 build/*
 .lock-waf*
 .DS_Store
-*.sublime-project
+*.sublime-*
