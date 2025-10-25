@@ -41,7 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Planned Features
 - Favorite routes storage
-- Updated information about delays (currently we only get the delay at the time of getting all possible journey)
+- Updated information about delays (currently we only get the delay at the time loading in the journeys)
 - Information about the transfers during your train journey 
 
 ### Known Issues
