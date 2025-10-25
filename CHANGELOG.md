@@ -8,10 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.2.0] - 25-10-2025
 
 ### Added
-- Clock display on confirmation screen showing current time
-- Clock positioned centered at the top of the screen above departure station name
-- Clock updates automatically every minute
-- Clock properly positioned for both round and rectangular Pebble displays
+- Clock display on countdown screen showing current time at the top center
+- Dutch railway-style platform indicator with white background, blue border, and small blue square in top-left corner
+- Arrow indicator between departure and arrival times for better visual clarity
+- Black bars on top and bottom for non-color displays (Aplite and Diorite)
+- Better support for Emery (still not perfect)
 
 ## [1.1.0] - 25-10-2025
 

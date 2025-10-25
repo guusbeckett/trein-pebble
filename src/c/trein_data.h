@@ -49,28 +49,30 @@ typedef struct {
 // Main Window Text Layers
 typedef struct {
   TextLayer *text_layer;
-  #ifdef PBL_COLOR
   Layer *bg_blue_layer;
-  Layer *bg_yellow_layer;
   Layer *bg_blue_bottom_layer;
+  #ifdef PBL_COLOR
+  Layer *bg_yellow_layer;
   #endif
 } MainWindowUI;
 
 // Countdown Window UI Components
 typedef struct {
-  TextLayer *platform_layer;
+  TextLayer *platform_number_layer;
+  Layer *platform_border_layer;
   TextLayer *countdown_layer;
   TextLayer *start_station_layer;
   TextLayer *destination_layer;
   TextLayer *departure_time_layer;
+  TextLayer *time_arrow_layer;
   TextLayer *arrival_time_layer;
   TextLayer *delay_layer;
   TextLayer *clock_layer;
   Layer *trip_leg_layer;
-  #ifdef PBL_COLOR
   Layer *bg_blue_layer;
-  Layer *bg_yellow_layer;
   Layer *bg_blue_bottom_layer;
+  #ifdef PBL_COLOR
+  Layer *bg_yellow_layer;
   #endif
 } CountdownWindowUI;
 

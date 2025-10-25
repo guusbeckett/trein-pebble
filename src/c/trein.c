@@ -49,7 +49,33 @@ static void prv_bg_yellow_update_proc(Layer *layer, GContext *ctx) {
   graphics_context_set_fill_color(ctx, GColorYellow);
   graphics_fill_rect(ctx, layer_get_bounds(layer), 0, GCornerNone);
 }
+#else
+// This function will be used to draw the black top/bottom bar for non-color displays
+static void prv_bg_black_update_proc(Layer *layer, GContext *ctx) {
+  graphics_context_set_fill_color(ctx, GColorBlack);
+  graphics_fill_rect(ctx, layer_get_bounds(layer), 0, GCornerNone);
+}
 #endif
+
+// Draw platform indicator with small blue square in top-left
+static void prv_platform_border_update_proc(Layer *layer, GContext *ctx) {
+  GRect bounds = layer_get_bounds(layer);
+
+  // Fill with white background
+  graphics_context_set_fill_color(ctx, GColorWhite);
+  graphics_fill_rect(ctx, bounds, 0, GCornerNone);
+
+  // Draw blue border
+  graphics_context_set_stroke_color(ctx, GColorOxfordBlue);
+  graphics_context_set_stroke_width(ctx, 2);
+  graphics_draw_rect(ctx, bounds);
+
+  // Draw small blue square in top-left corner touching the border
+  // Size proportional to the box size
+  int square_size = (bounds.size.w == 24) ? 6 : 8;
+  graphics_context_set_fill_color(ctx, GColorOxfordBlue);
+  graphics_fill_rect(ctx, GRect(1, 1, square_size, square_size), 0, GCornerNone);
+}
 
 // All data moved to s_app structure defined in trein_data.h
 
@@ -191,9 +217,8 @@ static void prv_trip_leg_layer_update_proc(Layer *layer, GContext *ctx) {
 #endif
 }
 
-static void prv_update_confirmation_display() {
-  snprintf(s_app.buffers.platform_buffer, sizeof(s_app.buffers.platform_buffer), "Platform %s", s_app.trips.platform[s_app.journey.selected_trip_index]);
-  text_layer_set_text(s_app.countdown_ui.platform_layer, s_app.buffers.platform_buffer);
+static void prv_update_countdown_display() {
+  text_layer_set_text(s_app.countdown_ui.platform_number_layer, s_app.trips.platform[s_app.journey.selected_trip_index]);
   if (strncmp (s_app.trips.delay[s_app.journey.selected_trip_index],"Cancelled",9) == 0) {
     snprintf(s_app.buffers.delay_buffer, sizeof(s_app.buffers.delay_buffer), "%s", "");
     text_layer_set_text(s_app.countdown_ui.delay_layer, s_app.buffers.delay_buffer);
@@ -239,7 +264,7 @@ static void prv_animation_stopped_handler(Animation *animation, bool finished, v
   }
 
   // Update all text content with new trip data
-  prv_update_confirmation_display();
+  prv_update_countdown_display();
 
   // Fade in from opposite direction
   Layer *window_layer = window_get_root_layer(s_app.windows.countdown_window);
@@ -265,7 +290,7 @@ static void prv_fade_in_stopped_handler(Animation *animation, bool finished, voi
   s_app.state.is_animating = false;
 }
 
-static void prv_update_confirmation_display_animated(AnimationDirection direction) {
+static void prv_update_countdown_display_animated(AnimationDirection direction) {
   if (s_app.state.is_animating) return;
 
   s_app.state.is_animating = true;
@@ -301,7 +326,7 @@ static void prv_countdown_down_click_handler(ClickRecognizerRef recognizer, void
   if (s_app.trips.count > 0 && !s_app.state.is_animating) {
     s_app.journey.selected_trip_index++;
     if (s_app.journey.selected_trip_index >= s_app.trips.count) { s_app.journey.selected_trip_index = 0; }
-    prv_update_confirmation_display_animated(ANIMATION_DIRECTION_UP);
+    prv_update_countdown_display_animated(ANIMATION_DIRECTION_UP);
   }
 }
 
@@ -309,7 +334,7 @@ static void prv_countdown_up_click_handler(ClickRecognizerRef recognizer, void *
   if (s_app.trips.count > 0 && !s_app.state.is_animating) {
     s_app.journey.selected_trip_index--;
     if (s_app.journey.selected_trip_index < 0) { s_app.journey.selected_trip_index = s_app.trips.count - 1; }
-    prv_update_confirmation_display_animated(ANIMATION_DIRECTION_DOWN);
+    prv_update_countdown_display_animated(ANIMATION_DIRECTION_DOWN);
   }
 }
 
@@ -593,8 +618,8 @@ static void prv_click_config_provider(void *context) {
 static void prv_window_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(window_layer);
+  const int bar_height = 40;
   #ifdef PBL_COLOR
-    const int bar_height = 40;
     s_app.main_ui.bg_blue_layer = layer_create(GRect(0, 0, bounds.size.w, bar_height));
     layer_set_update_proc(s_app.main_ui.bg_blue_layer, prv_bg_blue_update_proc);
     layer_add_child(window_layer, s_app.main_ui.bg_blue_layer);
@@ -604,6 +629,13 @@ static void prv_window_load(Window *window) {
     s_app.main_ui.bg_yellow_layer = layer_create(GRect(0, bar_height, bounds.size.w, bounds.size.h - (bar_height * 2)));
     layer_set_update_proc(s_app.main_ui.bg_yellow_layer, prv_bg_yellow_update_proc);
     layer_add_child(window_layer, s_app.main_ui.bg_yellow_layer);
+  #else
+    s_app.main_ui.bg_blue_layer = layer_create(GRect(0, 0, bounds.size.w, bar_height));
+    layer_set_update_proc(s_app.main_ui.bg_blue_layer, prv_bg_black_update_proc);
+    layer_add_child(window_layer, s_app.main_ui.bg_blue_layer);
+    s_app.main_ui.bg_blue_bottom_layer = layer_create(GRect(0, bounds.size.h - bar_height, bounds.size.w, bar_height));
+    layer_set_update_proc(s_app.main_ui.bg_blue_bottom_layer, prv_bg_black_update_proc);
+    layer_add_child(window_layer, s_app.main_ui.bg_blue_bottom_layer);
   #endif
 
   s_app.main_ui.text_layer = text_layer_create(GRect(0, grect_center_point(&bounds).y - 15, bounds.size.w, 30));
@@ -619,10 +651,10 @@ static void prv_window_load(Window *window) {
 
 static void prv_window_unload(Window *window) {
   text_layer_destroy(s_app.main_ui.text_layer);
+  layer_destroy(s_app.main_ui.bg_blue_layer);
+  layer_destroy(s_app.main_ui.bg_blue_bottom_layer);
   #ifdef PBL_COLOR
-    layer_destroy(s_app.main_ui.bg_blue_layer);
     layer_destroy(s_app.main_ui.bg_yellow_layer);
-    layer_destroy(s_app.main_ui.bg_blue_bottom_layer);
   #endif
 }
 
@@ -688,116 +720,114 @@ static void prv_countdown_click_config_provider(void *context) {
     s_app.countdown_ui.bg_yellow_layer = layer_create(GRect(0, bar_height, bounds.size.w, bounds.size.h - (bar_height * 2)));
     layer_set_update_proc(s_app.countdown_ui.bg_yellow_layer, prv_bg_yellow_update_proc);
     layer_add_child(window_layer, s_app.countdown_ui.bg_yellow_layer);
+  #else
+    s_app.countdown_ui.bg_blue_layer = layer_create(GRect(0, 0, bounds.size.w, bar_height));
+    layer_set_update_proc(s_app.countdown_ui.bg_blue_layer, prv_bg_black_update_proc);
+    layer_add_child(window_layer, s_app.countdown_ui.bg_blue_layer);
+    s_app.countdown_ui.bg_blue_bottom_layer = layer_create(GRect(0, bounds.size.h - bar_height, bounds.size.w, bar_height));
+    layer_set_update_proc(s_app.countdown_ui.bg_blue_bottom_layer, prv_bg_black_update_proc);
+    layer_add_child(window_layer, s_app.countdown_ui.bg_blue_bottom_layer);
   #endif
 
   s_app.countdown_ui.trip_leg_layer = layer_create(bounds);
   layer_set_update_proc(s_app.countdown_ui.trip_leg_layer, prv_trip_leg_layer_update_proc);
   layer_add_child(window_layer, s_app.countdown_ui.trip_leg_layer);
 
-  s_app.countdown_ui.start_station_layer = text_layer_create(GRect(0, 5, bounds.size.w, 30));
+  s_app.countdown_ui.start_station_layer = text_layer_create(GRect(0, 10, bounds.size.w, 30));
   text_layer_set_text(s_app.countdown_ui.start_station_layer, s_app.journey.start_station_name);
-  text_layer_set_font(s_app.countdown_ui.start_station_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
+  text_layer_set_font(s_app.countdown_ui.start_station_layer, fonts_get_system_font((bounds.size.w == 200) ? FONT_KEY_GOTHIC_28_BOLD : FONT_KEY_GOTHIC_24_BOLD));
   text_layer_set_text_alignment(s_app.countdown_ui.start_station_layer, GTextAlignmentCenter);
   text_layer_set_background_color(s_app.countdown_ui.start_station_layer, GColorClear);
-  #ifdef PBL_COLOR
   text_layer_set_text_color(s_app.countdown_ui.start_station_layer, GColorWhite);
-  #endif
   layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.start_station_layer));
 
-  s_app.countdown_ui.destination_layer = text_layer_create(GRect(0, bounds.size.h - bar_height + 5, bounds.size.w, 30));
+  s_app.countdown_ui.destination_layer = text_layer_create(GRect(0, bounds.size.h - bar_height, bounds.size.w, 30));
   text_layer_set_text(s_app.countdown_ui.destination_layer, s_app.journey.dest_station_name);
-  text_layer_set_font(s_app.countdown_ui.destination_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
+  text_layer_set_font(s_app.countdown_ui.destination_layer, fonts_get_system_font((bounds.size.w == 200) ? FONT_KEY_GOTHIC_28_BOLD : FONT_KEY_GOTHIC_24_BOLD));
   text_layer_set_text_alignment(s_app.countdown_ui.destination_layer, GTextAlignmentCenter);
   text_layer_set_background_color(s_app.countdown_ui.destination_layer, GColorClear);
-  #ifdef PBL_COLOR
   text_layer_set_text_color(s_app.countdown_ui.destination_layer, GColorWhite);
-  #endif
   layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.destination_layer));
 
-  int departure_y, arrival_y;
-  const int text_height = 22;
+  const int platform_y  = PBL_IF_ROUND_ELSE(40, 35);
+  // Center the countdown in the middle of the screen (between top and bottom bars)
+  const int content_height = bounds.size.h - (bar_height * 2); // Height between bars
+  const int countdown_y = bar_height + (content_height / 2) - 25; // Center countdown
+  const int delay_y = bounds.size.h - bar_height - 35; // Close to bottom bar
 
+  // Scale positions for larger displays (emery has 200px width vs 144px on other rect displays)
+  // Note: Pebble Round is excluded as PBL_IF_ROUND_ELSE handles it separately
+  const int x_offset = PBL_IF_ROUND_ELSE(17, (bounds.size.w == 200) ? 33 : 5);
+  const int platform_x_offset = PBL_IF_ROUND_ELSE(0, (bounds.size.w == 200) ? 40 : 0);
   #ifdef PBL_ROUND
-    GRect unobstructed_bounds = layer_get_unobstructed_bounds(window_get_root_layer(window));
-    GPoint center = grect_center_point(&unobstructed_bounds);
-    int radius = (unobstructed_bounds.size.w / 2) - 8;
-    GRect polar_rect = GRect(center.x - radius, center.y - radius, radius * 2, radius * 2);
-    
-    int32_t top_angle_trig = TRIG_MAX_ANGLE * 50 / 360;
-    int32_t bottom_angle_trig = TRIG_MAX_ANGLE * 130 / 360;
-
-    GPoint top_point = gpoint_from_polar(polar_rect, GOvalScaleModeFitCircle, top_angle_trig);
-    GPoint bottom_point = gpoint_from_polar(polar_rect, GOvalScaleModeFitCircle, bottom_angle_trig);
-
-    departure_y = top_point.y - text_height + 10;
-    arrival_y = bottom_point.y - 5;
-  #else // PBL_RECT
-    int total_height = bounds.size.h - 80;
-    int start_y_lines = 40;
-    departure_y = start_y_lines - text_height + 3;
-    arrival_y = start_y_lines + total_height - 5;
+  const bool is_large_display = false;
+  #else
+  const bool is_large_display = (bounds.size.w == 200);
   #endif
 
-  s_app.countdown_ui.departure_time_layer = text_layer_create(
-    PBL_IF_ROUND_ELSE(GRect(0, departure_y, bounds.size.w - 30, text_height),
-                      GRect(5, departure_y, bounds.size.w - 10, text_height)));
-  text_layer_set_font(s_app.countdown_ui.departure_time_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14));
-  text_layer_set_text_alignment(s_app.countdown_ui.departure_time_layer, GTextAlignmentRight);
+  s_app.countdown_ui.departure_time_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(17, platform_y + 4, 30, 20), GRect(x_offset, platform_y + 2, is_large_display ? 40 : 30, 20)));
+  text_layer_set_font(s_app.countdown_ui.departure_time_layer, fonts_get_system_font(is_large_display ? FONT_KEY_GOTHIC_18 : FONT_KEY_GOTHIC_14));
+  text_layer_set_text_alignment(s_app.countdown_ui.departure_time_layer, GTextAlignmentLeft);
   text_layer_set_background_color(s_app.countdown_ui.departure_time_layer, GColorClear);
-  #ifdef PBL_COLOR
-  text_layer_set_text_color(s_app.countdown_ui.departure_time_layer, GColorWhite);
-  #endif
+  text_layer_set_text_color(s_app.countdown_ui.departure_time_layer, GColorBlack);
   layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.departure_time_layer));
 
-  s_app.countdown_ui.arrival_time_layer = text_layer_create(
-    PBL_IF_ROUND_ELSE(GRect(0, arrival_y, bounds.size.w - 30, text_height),
-                      GRect(5, arrival_y+5, bounds.size.w - 10, text_height)));
-  text_layer_set_font(s_app.countdown_ui.arrival_time_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14));
-  text_layer_set_text_alignment(s_app.countdown_ui.arrival_time_layer, GTextAlignmentRight);
-  text_layer_set_background_color(s_app.countdown_ui.arrival_time_layer, GColorClear);
-  #ifdef PBL_COLOR
-  text_layer_set_text_color(s_app.countdown_ui.arrival_time_layer, GColorWhite);
+  s_app.countdown_ui.time_arrow_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(47, platform_y + 4, 15, 20), GRect(x_offset + (is_large_display ? 40 : 30), platform_y + 2, is_large_display ? 20 : 15, 20)));
+  text_layer_set_font(s_app.countdown_ui.time_arrow_layer, fonts_get_system_font(is_large_display ? FONT_KEY_GOTHIC_18 : FONT_KEY_GOTHIC_14));
+  text_layer_set_text_alignment(s_app.countdown_ui.time_arrow_layer, GTextAlignmentCenter);
+  text_layer_set_background_color(s_app.countdown_ui.time_arrow_layer, GColorClear);
+  text_layer_set_text_color(s_app.countdown_ui.time_arrow_layer, GColorBlack);
+  #ifdef PBL_PLATFORM_APLITE
+  text_layer_set_text(s_app.countdown_ui.time_arrow_layer, ">");
+  #else
+  text_layer_set_text(s_app.countdown_ui.time_arrow_layer, "→");
   #endif
+  layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.time_arrow_layer));
+
+  s_app.countdown_ui.arrival_time_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(62, platform_y + 4, 30, 20), GRect(x_offset + (is_large_display ? 60 : 45), platform_y + 2, is_large_display ? 40 : 30, 20)));
+  text_layer_set_font(s_app.countdown_ui.arrival_time_layer, fonts_get_system_font(is_large_display ? FONT_KEY_GOTHIC_18 : FONT_KEY_GOTHIC_14));
+  text_layer_set_text_alignment(s_app.countdown_ui.arrival_time_layer, GTextAlignmentLeft);
+  text_layer_set_background_color(s_app.countdown_ui.arrival_time_layer, GColorClear);
+  text_layer_set_text_color(s_app.countdown_ui.arrival_time_layer, GColorBlack);
   layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.arrival_time_layer));
 
-  const int platform_y  = PBL_IF_ROUND_ELSE(40, 35);
-  const int delay_y  = PBL_IF_ROUND_ELSE(105, 100);
-  const int countdown_y = PBL_IF_ROUND_ELSE(65, 60);
+  const int platform_size = is_large_display ? 32 : 24;
+  s_app.countdown_ui.platform_border_layer = layer_create(PBL_IF_ROUND_ELSE(GRect(118, platform_y + 2, 24, 24), GRect(90 + platform_x_offset, platform_y + 6, platform_size, platform_size)));
+  layer_set_update_proc(s_app.countdown_ui.platform_border_layer, prv_platform_border_update_proc);
+  layer_add_child(window_layer, s_app.countdown_ui.platform_border_layer);
 
-  s_app.countdown_ui.platform_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(0, platform_y, bounds.size.w, 30), GRect(5, platform_y - 2, bounds.size.w - 10, 30)));
-  text_layer_set_font(s_app.countdown_ui.platform_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
-  text_layer_set_text_alignment(s_app.countdown_ui.platform_layer, PBL_IF_ROUND_ELSE(GTextAlignmentCenter, GTextAlignmentLeft));
-  text_layer_set_background_color(s_app.countdown_ui.platform_layer, GColorClear);
-  text_layer_set_text_color(s_app.countdown_ui.platform_layer, GColorBlack);
-  layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.platform_layer));
+  s_app.countdown_ui.platform_number_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(120, platform_y + 4, 20, 24), GRect(92 + platform_x_offset, platform_y + 8, is_large_display ? 28 : 20, is_large_display ? 32 : 24)));
+  text_layer_set_font(s_app.countdown_ui.platform_number_layer, fonts_get_system_font(is_large_display ? FONT_KEY_GOTHIC_24_BOLD : FONT_KEY_GOTHIC_18_BOLD));
+  text_layer_set_text_alignment(s_app.countdown_ui.platform_number_layer, GTextAlignmentCenter);
+  text_layer_set_background_color(s_app.countdown_ui.platform_number_layer, GColorClear);
+  text_layer_set_text_color(s_app.countdown_ui.platform_number_layer, GColorOxfordBlue);
+  layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.platform_number_layer));
 
-  s_app.countdown_ui.delay_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(0, delay_y, bounds.size.w, 30), GRect(5, delay_y - 2, bounds.size.w - 10, 30)));
-  text_layer_set_font(s_app.countdown_ui.delay_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
+  s_app.countdown_ui.delay_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(0, delay_y, bounds.size.w, 30), GRect(x_offset, delay_y - 2, bounds.size.w - x_offset - 5, is_large_display ? 40 : 30)));
+  text_layer_set_font(s_app.countdown_ui.delay_layer, fonts_get_system_font(is_large_display ? FONT_KEY_GOTHIC_28_BOLD : FONT_KEY_GOTHIC_24_BOLD));
   text_layer_set_text_alignment(s_app.countdown_ui.delay_layer, PBL_IF_ROUND_ELSE(GTextAlignmentCenter, GTextAlignmentLeft));
   text_layer_set_background_color(s_app.countdown_ui.delay_layer, GColorClear);
   text_layer_set_text_color(s_app.countdown_ui.delay_layer, GColorBlack);
   layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.delay_layer));
 
-  s_app.countdown_ui.countdown_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(0, countdown_y, bounds.size.w, 50), GRect(5, countdown_y - 2, bounds.size.w - 10, 50)));
+  s_app.countdown_ui.countdown_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(0, countdown_y, bounds.size.w, 50), GRect(x_offset, countdown_y - 2, bounds.size.w - x_offset - 5, is_large_display ? 60 : 50)));
   text_layer_set_text(s_app.countdown_ui.countdown_layer, "Loading...");
-  text_layer_set_font(s_app.countdown_ui.countdown_layer, fonts_get_system_font(FONT_KEY_LECO_36_BOLD_NUMBERS));
+  text_layer_set_font(s_app.countdown_ui.countdown_layer, fonts_get_system_font(is_large_display ? FONT_KEY_LECO_42_NUMBERS : FONT_KEY_LECO_36_BOLD_NUMBERS));
   text_layer_set_text_alignment(s_app.countdown_ui.countdown_layer, PBL_IF_ROUND_ELSE(GTextAlignmentCenter, GTextAlignmentLeft));
   text_layer_set_background_color(s_app.countdown_ui.countdown_layer, GColorClear);
   text_layer_set_text_color(s_app.countdown_ui.countdown_layer, GColorBlack);
   layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.countdown_layer));
 
-  s_app.countdown_ui.clock_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(0, 0, bounds.size.w, 16), GRect(0, 0, bounds.size.w, 16)));
-  text_layer_set_font(s_app.countdown_ui.clock_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14));
+  s_app.countdown_ui.clock_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(0, 0, bounds.size.w, 16), GRect(0, 0, bounds.size.w, is_large_display ? 20 : 16)));
+  text_layer_set_font(s_app.countdown_ui.clock_layer, fonts_get_system_font(is_large_display ? FONT_KEY_GOTHIC_18 : FONT_KEY_GOTHIC_14));
   text_layer_set_text_alignment(s_app.countdown_ui.clock_layer, GTextAlignmentCenter);
   text_layer_set_background_color(s_app.countdown_ui.clock_layer, GColorClear);
-  #ifdef PBL_COLOR
   text_layer_set_text_color(s_app.countdown_ui.clock_layer, GColorWhite);
-  #endif
   layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.clock_layer));
 
   prv_clock_timer_callback(NULL);
 
-  prv_update_confirmation_display();
+  prv_update_countdown_display();
 }
 
 static void prv_countdown_window_unload(Window *window) {
@@ -821,19 +851,21 @@ static void prv_countdown_window_unload(Window *window) {
 
   text_layer_destroy(s_app.countdown_ui.destination_layer);
   text_layer_destroy(s_app.countdown_ui.start_station_layer);
-  text_layer_destroy(s_app.countdown_ui.platform_layer);
+  layer_destroy(s_app.countdown_ui.platform_border_layer);
+  text_layer_destroy(s_app.countdown_ui.platform_number_layer);
   text_layer_destroy(s_app.countdown_ui.countdown_layer);
   text_layer_destroy(s_app.countdown_ui.clock_layer);
   text_layer_destroy(s_app.countdown_ui.departure_time_layer);
+  text_layer_destroy(s_app.countdown_ui.time_arrow_layer);
   text_layer_destroy(s_app.countdown_ui.arrival_time_layer);
   text_layer_destroy(s_app.countdown_ui.delay_layer);
 
   layer_destroy(s_app.countdown_ui.trip_leg_layer);
 
+  layer_destroy(s_app.countdown_ui.bg_blue_layer);
+  layer_destroy(s_app.countdown_ui.bg_blue_bottom_layer);
   #ifdef PBL_COLOR
-    layer_destroy(s_app.countdown_ui.bg_blue_layer);
     layer_destroy(s_app.countdown_ui.bg_yellow_layer);
-    layer_destroy(s_app.countdown_ui.bg_blue_bottom_layer);
   #endif
 }
 
