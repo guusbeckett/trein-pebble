@@ -36,7 +36,7 @@ typedef struct {
   Window *menu_window;
   Window *dest_menu_window;
   Window *alpha_menu_window;
-  Window *confirmation_window;
+  Window *countdown_window;
 } AppWindows;
 
 // Menu Layer Components
@@ -56,7 +56,7 @@ typedef struct {
   #endif
 } MainWindowUI;
 
-// Confirmation Window UI Components
+// Countdown Window UI Components
 typedef struct {
   TextLayer *platform_layer;
   TextLayer *countdown_layer;
@@ -72,9 +72,9 @@ typedef struct {
   Layer *bg_yellow_layer;
   Layer *bg_blue_bottom_layer;
   #endif
-} ConfirmationWindowUI;
+} CountdownWindowUI;
 
-// Display Buffers for Confirmation Window
+// Display Buffers for Countdown Window
 typedef struct {
   char platform_buffer[32];
   char countdown_buffer[16];
@@ -140,7 +140,7 @@ typedef struct {
   AppWindows windows;
   AppMenuLayers menu_layers;
   MainWindowUI main_ui;
-  ConfirmationWindowUI conf_ui;
+  CountdownWindowUI countdown_ui;
   DisplayBuffers buffers;
   StationData stations;
   TripData trips;
