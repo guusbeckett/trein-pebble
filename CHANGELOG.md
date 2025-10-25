@@ -5,6 +5,12 @@ All notable changes to the Trein Pebble app will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 25-10-2025
+
+### Fixed
+- Second menu for selecting destination didn't group by first letter correctly
+- Stations starting with the Dutch article "De" are now sorted in the Dutch way (sort by the first letter after the word "De")
+
 ## [1.0.0] - 22-10-2025
 
 ### Added
