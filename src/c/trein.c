@@ -93,6 +93,18 @@ static void prv_parse_time_and_start_timer() {
   prv_countdown_timer_callback(NULL);
 }
 
+static void prv_clock_timer_callback(void *data) {
+  time_t now = time(NULL);
+  struct tm *current_time = localtime(&now);
+
+  strftime(s_app.buffers.clock_buffer, sizeof(s_app.buffers.clock_buffer), "%H:%M", current_time);
+  text_layer_set_text(s_app.conf_ui.clock_layer, s_app.buffers.clock_buffer);
+
+  // Calculate milliseconds until next minute
+  int seconds_until_next_minute = 60 - current_time->tm_sec;
+  s_app.state.clock_timer = app_timer_register(seconds_until_next_minute * 1000, prv_clock_timer_callback, NULL);
+}
+
 static void prv_trip_leg_layer_update_proc(Layer *layer, GContext *ctx) {
   int transfers = 0;
   if (s_app.trips.count > 0 && s_app.trips.transfers[s_app.journey.selected_trip_index][0] != '\0') {
@@ -774,6 +786,17 @@ static void prv_confirmation_click_config_provider(void *context) {
   text_layer_set_text_color(s_app.conf_ui.countdown_layer, GColorBlack);
   layer_add_child(window_layer, text_layer_get_layer(s_app.conf_ui.countdown_layer));
 
+  s_app.conf_ui.clock_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(0, 0, bounds.size.w, 16), GRect(0, 0, bounds.size.w, 16)));
+  text_layer_set_font(s_app.conf_ui.clock_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14));
+  text_layer_set_text_alignment(s_app.conf_ui.clock_layer, GTextAlignmentCenter);
+  text_layer_set_background_color(s_app.conf_ui.clock_layer, GColorClear);
+  #ifdef PBL_COLOR
+  text_layer_set_text_color(s_app.conf_ui.clock_layer, GColorWhite);
+  #endif
+  layer_add_child(window_layer, text_layer_get_layer(s_app.conf_ui.clock_layer));
+
+  prv_clock_timer_callback(NULL);
+
   prv_update_confirmation_display();
 }
 
@@ -781,6 +804,11 @@ static void prv_confirmation_window_unload(Window *window) {
   if (s_app.state.countdown_timer) {
     app_timer_cancel(s_app.state.countdown_timer);
     s_app.state.countdown_timer = NULL;
+  }
+
+  if (s_app.state.clock_timer) {
+    app_timer_cancel(s_app.state.clock_timer);
+    s_app.state.clock_timer = NULL;
   }
 
   // Unschedule animation if running, but don't destroy (animations auto-free when complete)
@@ -795,6 +823,7 @@ static void prv_confirmation_window_unload(Window *window) {
   text_layer_destroy(s_app.conf_ui.start_station_layer);
   text_layer_destroy(s_app.conf_ui.platform_layer);
   text_layer_destroy(s_app.conf_ui.countdown_layer);
+  text_layer_destroy(s_app.conf_ui.clock_layer);
   text_layer_destroy(s_app.conf_ui.departure_time_layer);
   text_layer_destroy(s_app.conf_ui.arrival_time_layer);
   text_layer_destroy(s_app.conf_ui.delay_layer);

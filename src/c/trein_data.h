@@ -65,6 +65,7 @@ typedef struct {
   TextLayer *departure_time_layer;
   TextLayer *arrival_time_layer;
   TextLayer *delay_layer;
+  TextLayer *clock_layer;
   Layer *trip_leg_layer;
   #ifdef PBL_COLOR
   Layer *bg_blue_layer;
@@ -80,6 +81,7 @@ typedef struct {
   char departure_time_buffer[6];
   char arrival_time_buffer[6];
   char delay_buffer[10];
+  char clock_buffer[6];
   char section_header[16];
   char letter_str[2];
 } DisplayBuffers;
@@ -126,6 +128,7 @@ typedef struct {
   int selected_alphabet_index;
   time_t departure_time;
   AppTimer *countdown_timer;
+  AppTimer *clock_timer;
   AppTimer *fallback_timer;
   PropertyAnimation *content_animation;
   bool is_animating;
