@@ -246,7 +246,7 @@ function processTripData(data) {
       actualDepartureTime = trips[sendIndex].legs[trips[sendIndex].transfers].destination.plannedDateTime;
     }
 
-    var delay = (actualDepartureTime-Date.parse(trips[sendIndex].legs[0].origin.plannedDateTime))/60000;
+    var delay = (Date.parse(actualDepartureTime)-Date.parse(plannedDepartureTime))/60000;
     var tripDelay = "On time";
     if (delay > 0) {
       tripDelay = "+" + delay;
