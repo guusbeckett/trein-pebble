@@ -33,6 +33,8 @@ static void prv_update_countdown_display_animated(AnimationDirection direction);
 static void prv_animation_started_handler(Animation *animation, void *context);
 static void prv_animation_stopped_handler(Animation *animation, bool finished, void *context);
 static void prv_fade_in_stopped_handler(Animation *animation, bool finished, void *context);
+static void prv_spinner_layer_update_proc(Layer *layer, GContext *ctx);
+static void prv_spinner_timer_callback(void *data);
 static void prv_trip_leg_layer_update_proc(Layer *layer, GContext *ctx);
 
 // --- Global Application Data ---
@@ -75,6 +77,86 @@ static void prv_platform_border_update_proc(Layer *layer, GContext *ctx) {
   int square_size = (bounds.size.w == 24) ? 6 : 8;
   graphics_context_set_fill_color(ctx, GColorOxfordBlue);
   graphics_fill_rect(ctx, GRect(1, 1, square_size, square_size), 0, GCornerNone);
+}
+
+// Draw animated clock spinner
+static void prv_spinner_layer_update_proc(Layer *layer, GContext *ctx) {
+  GRect bounds = layer_get_bounds(layer);
+  GPoint center = grect_center_point(&bounds);
+
+  // Scale clock to fit the layer (with some padding)
+  const int clock_radius = (bounds.size.w < bounds.size.h ? bounds.size.w : bounds.size.h) / 2 - 10;
+  const int minute_hand_length = clock_radius - 5;
+  const int hour_hand_length = clock_radius * 3 / 5;
+  const int tick_length = clock_radius / 6;
+
+  // Draw clock circle
+  #ifdef PBL_COLOR
+  graphics_context_set_stroke_color(ctx, GColorOxfordBlue);
+  graphics_context_set_fill_color(ctx, GColorWhite);
+  #else
+  graphics_context_set_stroke_color(ctx, GColorBlack);
+  graphics_context_set_fill_color(ctx, GColorWhite);
+  #endif
+  graphics_context_set_stroke_width(ctx, 4);
+  graphics_fill_circle(ctx, center, clock_radius);
+  graphics_draw_circle(ctx, center, clock_radius);
+
+  // Draw clock tick marks (12, 3, 6, 9)
+  for (int i = 0; i < 4; i++) {
+    int32_t angle = TRIG_MAX_ANGLE * i / 4;
+    GPoint outer = gpoint_from_polar(GRect(center.x - clock_radius, center.y - clock_radius,
+                                           clock_radius * 2, clock_radius * 2),
+                                    GOvalScaleModeFitCircle, angle);
+    GPoint inner = {
+      .x = center.x + ((outer.x - center.x) * (clock_radius - tick_length)) / clock_radius,
+      .y = center.y + ((outer.y - center.y) * (clock_radius - tick_length)) / clock_radius
+    };
+    graphics_context_set_stroke_width(ctx, 3);
+    graphics_draw_line(ctx, inner, outer);
+  }
+
+  // Calculate hand angles based on spinner_angle
+  int32_t minute_angle = (TRIG_MAX_ANGLE * s_app.state.spinner_angle / 360) - TRIG_MAX_ANGLE / 4;
+  int32_t hour_angle = (TRIG_MAX_ANGLE * (s_app.state.spinner_angle / 12) / 360) - TRIG_MAX_ANGLE / 4;
+
+  // Draw hour hand (shorter, thicker)
+  GPoint hour_end = {
+    .x = center.x + (sin_lookup(hour_angle) * hour_hand_length / TRIG_MAX_RATIO),
+    .y = center.y - (cos_lookup(hour_angle) * hour_hand_length / TRIG_MAX_RATIO)
+  };
+  graphics_context_set_stroke_width(ctx, clock_radius / 10);
+  #ifdef PBL_COLOR
+  graphics_context_set_stroke_color(ctx, GColorOxfordBlue);
+  #else
+  graphics_context_set_stroke_color(ctx, GColorBlack);
+  #endif
+  graphics_draw_line(ctx, center, hour_end);
+
+  // Draw minute hand (longer, thinner)
+  GPoint minute_end = {
+    .x = center.x + (sin_lookup(minute_angle) * minute_hand_length / TRIG_MAX_RATIO),
+    .y = center.y - (cos_lookup(minute_angle) * minute_hand_length / TRIG_MAX_RATIO)
+  };
+  graphics_context_set_stroke_width(ctx, clock_radius / 15);
+  graphics_draw_line(ctx, center, minute_end);
+
+  // Draw center dot
+  #ifdef PBL_COLOR
+  graphics_context_set_fill_color(ctx, GColorOxfordBlue);
+  #else
+  graphics_context_set_fill_color(ctx, GColorBlack);
+  #endif
+  graphics_fill_circle(ctx, center, clock_radius / 8);
+}
+
+// Spinner animation timer callback
+static void prv_spinner_timer_callback(void *data) {
+  s_app.state.spinner_angle = (s_app.state.spinner_angle + 6) % 360;
+  if (s_app.main_ui.spinner_layer) {
+    layer_mark_dirty(s_app.main_ui.spinner_layer);
+    s_app.state.spinner_timer = app_timer_register(50, prv_spinner_timer_callback, NULL);
+  }
 }
 
 // All data moved to s_app structure defined in trein_data.h
@@ -526,6 +608,12 @@ static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) 
         s_app.stations.loaded = true;
         if (s_app.state.fallback_timer) { app_timer_cancel(s_app.state.fallback_timer); s_app.state.fallback_timer = NULL; }
 
+        // Stop the spinner animation
+        if (s_app.state.spinner_timer) {
+          app_timer_cancel(s_app.state.spinner_timer);
+          s_app.state.spinner_timer = NULL;
+        }
+
         if (s_app.menu_layers.menu_layer) { menu_layer_reload_data(s_app.menu_layers.menu_layer); }
 
         if (!s_app.windows.menu_window) {
@@ -638,18 +726,39 @@ static void prv_window_load(Window *window) {
     layer_add_child(window_layer, s_app.main_ui.bg_blue_bottom_layer);
   #endif
 
-  s_app.main_ui.text_layer = text_layer_create(GRect(0, grect_center_point(&bounds).y - 15, bounds.size.w, 30));
+  // Create spinner layer centered - taking up half the screen height
+  GPoint center = grect_center_point(&bounds);
+  int spinner_size = bounds.size.h / 2;
+  int spinner_radius = spinner_size / 2;
+  s_app.main_ui.spinner_layer = layer_create(GRect(center.x - spinner_radius, center.y - spinner_radius, spinner_size, spinner_size));
+  layer_set_update_proc(s_app.main_ui.spinner_layer, prv_spinner_layer_update_proc);
+  layer_add_child(window_layer, s_app.main_ui.spinner_layer);
+
+  // Create text layer in the bottom bar with white text
+  s_app.main_ui.text_layer = text_layer_create(GRect(0, bounds.size.h - bar_height, bounds.size.w, bar_height));
   text_layer_set_text_alignment(s_app.main_ui.text_layer, GTextAlignmentCenter);
-  #ifdef PBL_COLOR
-    text_layer_set_background_color(s_app.main_ui.text_layer, GColorClear);
-    text_layer_set_text_color(s_app.main_ui.text_layer, GColorBlack);
-  #endif
+  text_layer_set_background_color(s_app.main_ui.text_layer, GColorClear);
+  text_layer_set_text_color(s_app.main_ui.text_layer, GColorWhite);
   layer_add_child(window_layer, text_layer_get_layer(s_app.main_ui.text_layer));
+
+  // Start the spinner animation
+  s_app.state.spinner_angle = 0;
+  s_app.state.spinner_timer = app_timer_register(50, prv_spinner_timer_callback, NULL);
 
   prv_request_stations_from_phone();
 }
 
 static void prv_window_unload(Window *window) {
+  // Stop spinner animation
+  if (s_app.state.spinner_timer) {
+    app_timer_cancel(s_app.state.spinner_timer);
+    s_app.state.spinner_timer = NULL;
+  }
+
+  if (s_app.main_ui.spinner_layer) {
+    layer_destroy(s_app.main_ui.spinner_layer);
+  }
+
   text_layer_destroy(s_app.main_ui.text_layer);
   layer_destroy(s_app.main_ui.bg_blue_layer);
   layer_destroy(s_app.main_ui.bg_blue_bottom_layer);

@@ -5,6 +5,15 @@ All notable changes to the Trein Pebble app will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 26-10-2025
+
+### Added
+- Animated station clock spinner on startup/loading screen
+- Clock animation with rotating hour and minute hands showing loading progress
+- Centered clock display taking up exactly half the screen for maximum visibility
+- White text in bottom bar for loading status message
+- Responsive clock scaling across all Pebble platforms (Aplite, Basalt, Chalk, Diorite, Emery)
+
 ## [1.2.0] - 25-10-2025
 
 ### Added

@@ -51,6 +51,7 @@ typedef struct {
   TextLayer *text_layer;
   Layer *bg_blue_layer;
   Layer *bg_blue_bottom_layer;
+  Layer *spinner_layer;
   #ifdef PBL_COLOR
   Layer *bg_yellow_layer;
   #endif
@@ -132,9 +133,11 @@ typedef struct {
   AppTimer *countdown_timer;
   AppTimer *clock_timer;
   AppTimer *fallback_timer;
+  AppTimer *spinner_timer;
   PropertyAnimation *content_animation;
   bool is_animating;
   AnimationDirection animation_direction;
+  int spinner_angle;
 } AppState;
 
 // --- Global App Data Instance ---
