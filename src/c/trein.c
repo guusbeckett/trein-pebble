@@ -36,6 +36,8 @@ static void prv_fade_in_stopped_handler(Animation *animation, bool finished, voi
 static void prv_spinner_layer_update_proc(Layer *layer, GContext *ctx);
 static void prv_spinner_timer_callback(void *data);
 static void prv_trip_leg_layer_update_proc(Layer *layer, GContext *ctx);
+static void prv_journey_details_window_load(Window *window);
+static void prv_journey_details_window_unload(Window *window);
 
 // --- Global Application Data ---
 static AppData s_app;
@@ -583,6 +585,15 @@ static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) 
   Tuple *trip_count_tuple = dict_find(iter, MESSAGE_KEY_TRIP_COUNT);
   Tuple *trip_delay_tuple = dict_find(iter, MESSAGE_KEY_TRIP_DELAY);
   Tuple *error_tuple = dict_find(iter, MESSAGE_KEY_ERROR);
+  Tuple *leg_trip_index_tuple = dict_find(iter, MESSAGE_KEY_LEG_TRIP_INDEX);
+  Tuple *leg_index_tuple = dict_find(iter, MESSAGE_KEY_LEG_INDEX);
+  Tuple *leg_count_tuple = dict_find(iter, MESSAGE_KEY_LEG_COUNT);
+  Tuple *leg_departure_station_tuple = dict_find(iter, MESSAGE_KEY_LEG_DEPARTURE_STATION);
+  Tuple *leg_departure_platform_tuple = dict_find(iter, MESSAGE_KEY_LEG_DEPARTURE_PLATFORM);
+  Tuple *leg_departure_time_tuple = dict_find(iter, MESSAGE_KEY_LEG_DEPARTURE_TIME);
+  Tuple *leg_arrival_station_tuple = dict_find(iter, MESSAGE_KEY_LEG_ARRIVAL_STATION);
+  Tuple *leg_arrival_time_tuple = dict_find(iter, MESSAGE_KEY_LEG_ARRIVAL_TIME);
+  Tuple *leg_duration_tuple = dict_find(iter, MESSAGE_KEY_LEG_DURATION);
   
   if (error_tuple) {
     text_layer_set_text(s_app.main_ui.text_layer, "Add API key in settings...");
@@ -661,6 +672,44 @@ static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) 
         }
         window_stack_push(s_app.windows.countdown_window, true);
       }
+    }
+  }
+
+  // Handle leg data messages
+  if (leg_trip_index_tuple && leg_index_tuple && leg_count_tuple &&
+      leg_departure_station_tuple && leg_departure_platform_tuple &&
+      leg_departure_time_tuple && leg_arrival_station_tuple &&
+      leg_arrival_time_tuple && leg_duration_tuple) {
+    int trip_idx = leg_trip_index_tuple->value->int32;
+    int leg_idx = leg_index_tuple->value->int32;
+    int leg_count = leg_count_tuple->value->int32;
+    const char *departure_station = leg_departure_station_tuple->value->cstring;
+    const char *departure_platform = leg_departure_platform_tuple->value->cstring;
+    const char *departure_time = leg_departure_time_tuple->value->cstring;
+    const char *arrival_station = leg_arrival_station_tuple->value->cstring;
+    const char *arrival_time = leg_arrival_time_tuple->value->cstring;
+    const char *duration = leg_duration_tuple->value->cstring;
+
+    if (trip_idx >= 0 && trip_idx < MAX_TRIPS && leg_idx >= 0 && leg_idx < MAX_LEGS) {
+      strncpy(s_app.trip_legs[trip_idx].legs[leg_idx].departure_station, departure_station, MAX_LEG_STATION_LENGTH - 1);
+      s_app.trip_legs[trip_idx].legs[leg_idx].departure_station[MAX_LEG_STATION_LENGTH - 1] = '\0';
+
+      strncpy(s_app.trip_legs[trip_idx].legs[leg_idx].departure_platform, departure_platform, MAX_PLATFORM_LENGTH - 1);
+      s_app.trip_legs[trip_idx].legs[leg_idx].departure_platform[MAX_PLATFORM_LENGTH - 1] = '\0';
+
+      strncpy(s_app.trip_legs[trip_idx].legs[leg_idx].departure_time, departure_time, MAX_LEG_TIME_LENGTH - 1);
+      s_app.trip_legs[trip_idx].legs[leg_idx].departure_time[MAX_LEG_TIME_LENGTH - 1] = '\0';
+
+      strncpy(s_app.trip_legs[trip_idx].legs[leg_idx].arrival_station, arrival_station, MAX_LEG_STATION_LENGTH - 1);
+      s_app.trip_legs[trip_idx].legs[leg_idx].arrival_station[MAX_LEG_STATION_LENGTH - 1] = '\0';
+
+      strncpy(s_app.trip_legs[trip_idx].legs[leg_idx].arrival_time, arrival_time, MAX_LEG_TIME_LENGTH - 1);
+      s_app.trip_legs[trip_idx].legs[leg_idx].arrival_time[MAX_LEG_TIME_LENGTH - 1] = '\0';
+
+      strncpy(s_app.trip_legs[trip_idx].legs[leg_idx].duration, duration, MAX_LEG_DURATION_LENGTH - 1);
+      s_app.trip_legs[trip_idx].legs[leg_idx].duration[MAX_LEG_DURATION_LENGTH - 1] = '\0';
+
+      s_app.trip_legs[trip_idx].leg_count = leg_count;
     }
   }
 }
@@ -787,6 +836,7 @@ static void prv_deinit(void) {
   if(s_app.windows.dest_menu_window) window_destroy(s_app.windows.dest_menu_window);
   if(s_app.windows.alpha_menu_window) window_destroy(s_app.windows.alpha_menu_window);
   if(s_app.windows.countdown_window) window_destroy(s_app.windows.countdown_window);
+  if(s_app.windows.journey_details_window) window_destroy(s_app.windows.journey_details_window);
   window_destroy(s_app.windows.main_window);
 }
 
@@ -799,8 +849,134 @@ static void prv_send_trip_request(void) {
   }
 }
 
-static void prv_countdown_select_click_handler(ClickRecognizerRef recognizer, void *context) {
+// --- Journey Details Window ---
+static uint16_t prv_journey_details_get_num_rows_callback(MenuLayer *menu_layer, uint16_t section_index, void *context) {
+  int trip_idx = s_app.journey.selected_trip_index;
+  return s_app.trip_legs[trip_idx].leg_count;
+}
+
+static int16_t prv_journey_details_get_cell_height_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {
+  return 52;
+}
+
+static void prv_journey_details_draw_row_callback(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index, void *context) {
+  int trip_idx = s_app.journey.selected_trip_index;
+  int leg_idx = cell_index->row;
+  LegData *leg = &s_app.trip_legs[trip_idx].legs[leg_idx];
+
+  GRect bounds = layer_get_bounds(cell_layer);
+
+  // Check if this row is selected
+  MenuIndex selected = menu_layer_get_selected_index(s_app.journey_details_ui.menu_layer);
+  bool is_selected = (selected.row == cell_index->row && selected.section == cell_index->section);
+
+  // Set text colors based on selection state
+  GColor main_text_color = is_selected ? GColorWhite : GColorBlack;
+  GColor secondary_text_color = is_selected ? GColorWhite : GColorDarkGray;
+
+  graphics_context_set_text_color(ctx, main_text_color);
+
+  // Draw departure time
+  graphics_draw_text(ctx, leg->departure_time, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                     GRect(4, 2, 40, 20), GTextOverflowModeTrailingEllipsis,
+                     GTextAlignmentLeft, NULL);
+
+  // Draw departure station
+  graphics_draw_text(ctx, leg->departure_station, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                     GRect(46, 2, bounds.size.w - 82, 20), GTextOverflowModeTrailingEllipsis,
+                     GTextAlignmentLeft, NULL);
+
+  // Draw platform box
+  int platform_x = bounds.size.w - 32;
+  graphics_context_set_fill_color(ctx, GColorWhite);
+  graphics_fill_rect(ctx, GRect(platform_x, 4, 24, 18), 0, GCornerNone);
+  graphics_context_set_stroke_color(ctx, GColorOxfordBlue);
+  graphics_context_set_stroke_width(ctx, 1);
+  graphics_draw_rect(ctx, GRect(platform_x, 4, 24, 18));
+
+  // Draw small blue square in platform box
+  graphics_context_set_fill_color(ctx, GColorOxfordBlue);
+  graphics_fill_rect(ctx, GRect(platform_x + 1, 5, 5, 5), 0, GCornerNone);
+
+  // Draw platform number (always blue on white background)
+  graphics_context_set_text_color(ctx, GColorOxfordBlue);
+  graphics_draw_text(ctx, leg->departure_platform, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                     GRect(platform_x, 4, 24, 18), GTextOverflowModeTrailingEllipsis,
+                     GTextAlignmentCenter, NULL);
+
+  // Draw arrival time
+  graphics_context_set_text_color(ctx, secondary_text_color);
+  graphics_draw_text(ctx, leg->arrival_time, fonts_get_system_font(FONT_KEY_GOTHIC_18),
+                     GRect(4, 28, 40, 20), GTextOverflowModeTrailingEllipsis,
+                     GTextAlignmentLeft, NULL);
+
+  // Draw arrival station
+  graphics_draw_text(ctx, leg->arrival_station, fonts_get_system_font(FONT_KEY_GOTHIC_18),
+                     GRect(46, 28, bounds.size.w - 82, 20), GTextOverflowModeTrailingEllipsis,
+                     GTextAlignmentLeft, NULL);
+
+  // Draw duration below platform (aligned with left edge of platform box)
+  graphics_draw_text(ctx, leg->duration, fonts_get_system_font(FONT_KEY_GOTHIC_14),
+                     GRect(platform_x, 26, 40, 18), GTextOverflowModeTrailingEllipsis,
+                     GTextAlignmentLeft, NULL);
+}
+
+static void prv_journey_details_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {
   window_stack_pop_all(true);
+}
+
+static void prv_journey_details_window_load(Window *window) {
+  Layer *window_layer = window_get_root_layer(window);
+  GRect bounds = layer_get_bounds(window_layer);
+  const int bar_height = 30;
+
+  #ifdef PBL_COLOR
+    s_app.journey_details_ui.bg_blue_layer = layer_create(GRect(0, 0, bounds.size.w, bar_height));
+    layer_set_update_proc(s_app.journey_details_ui.bg_blue_layer, prv_bg_blue_update_proc);
+    layer_add_child(window_layer, s_app.journey_details_ui.bg_blue_layer);
+    s_app.journey_details_ui.bg_yellow_layer = layer_create(GRect(0, bar_height, bounds.size.w, bounds.size.h - bar_height));
+    layer_set_update_proc(s_app.journey_details_ui.bg_yellow_layer, prv_bg_yellow_update_proc);
+    layer_add_child(window_layer, s_app.journey_details_ui.bg_yellow_layer);
+  #else
+    s_app.journey_details_ui.bg_blue_layer = layer_create(GRect(0, 0, bounds.size.w, bar_height));
+    layer_set_update_proc(s_app.journey_details_ui.bg_blue_layer, prv_bg_black_update_proc);
+    layer_add_child(window_layer, s_app.journey_details_ui.bg_blue_layer);
+  #endif
+
+  // Create menu layer for scrollable leg list
+  GRect menu_bounds = GRect(0, bar_height, bounds.size.w, bounds.size.h - bar_height);
+  s_app.journey_details_ui.menu_layer = menu_layer_create(menu_bounds);
+  menu_layer_set_click_config_onto_window(s_app.journey_details_ui.menu_layer, window);
+  menu_layer_set_callbacks(s_app.journey_details_ui.menu_layer, NULL, (MenuLayerCallbacks) {
+    .get_num_rows = prv_journey_details_get_num_rows_callback,
+    .get_cell_height = prv_journey_details_get_cell_height_callback,
+    .draw_row = prv_journey_details_draw_row_callback,
+    .select_click = prv_journey_details_select_callback,
+  });
+  #ifdef PBL_COLOR
+  menu_layer_set_normal_colors(s_app.journey_details_ui.menu_layer, GColorYellow, GColorBlack);
+  menu_layer_set_highlight_colors(s_app.journey_details_ui.menu_layer, GColorOxfordBlue, GColorWhite);
+  #endif
+  layer_add_child(window_layer, menu_layer_get_layer(s_app.journey_details_ui.menu_layer));
+}
+
+static void prv_journey_details_window_unload(Window *window) {
+  menu_layer_destroy(s_app.journey_details_ui.menu_layer);
+  layer_destroy(s_app.journey_details_ui.bg_blue_layer);
+  #ifdef PBL_COLOR
+    layer_destroy(s_app.journey_details_ui.bg_yellow_layer);
+  #endif
+}
+
+static void prv_countdown_select_click_handler(ClickRecognizerRef recognizer, void *context) {
+  // Push journey details window instead of popping all
+  if (!s_app.windows.journey_details_window) {
+    s_app.windows.journey_details_window = window_create();
+    window_set_window_handlers(s_app.windows.journey_details_window, (WindowHandlers) {
+      .load = prv_journey_details_window_load, .unload = prv_journey_details_window_unload,
+    });
+  }
+  window_stack_push(s_app.windows.journey_details_window, true);
 }
 
 static void prv_countdown_click_config_provider(void *context) {

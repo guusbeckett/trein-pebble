@@ -27,8 +27,29 @@
 #define MAX_TRANSFERS_LENGTH 3
 #define MAX_PLATFORM_LENGTH 3
 #define MAX_DELAY_LENGTH 10
+#define MAX_LEGS 4
+#define MAX_LEG_STATION_LENGTH 16
 
 // --- Data Structures ---
+
+// Leg Data (individual journey leg information)
+#define MAX_LEG_TIME_LENGTH 6
+#define MAX_LEG_DURATION_LENGTH 8
+
+typedef struct {
+  char departure_station[MAX_LEG_STATION_LENGTH];
+  char departure_platform[MAX_PLATFORM_LENGTH];
+  char departure_time[MAX_LEG_TIME_LENGTH];
+  char arrival_station[MAX_LEG_STATION_LENGTH];
+  char arrival_time[MAX_LEG_TIME_LENGTH];
+  char duration[MAX_LEG_DURATION_LENGTH];
+} LegData;
+
+// Trip Legs Data (all legs for a trip)
+typedef struct {
+  LegData legs[MAX_LEGS];
+  int leg_count;
+} TripLegsData;
 
 // UI Window Components
 typedef struct {
@@ -37,6 +58,7 @@ typedef struct {
   Window *dest_menu_window;
   Window *alpha_menu_window;
   Window *countdown_window;
+  Window *journey_details_window;
 } AppWindows;
 
 // Menu Layer Components
@@ -76,6 +98,16 @@ typedef struct {
   Layer *bg_yellow_layer;
   #endif
 } CountdownWindowUI;
+
+// Journey Details Window UI Components
+typedef struct {
+  MenuLayer *menu_layer;
+  Layer *bg_blue_layer;
+  Layer *bg_blue_bottom_layer;
+  #ifdef PBL_COLOR
+  Layer *bg_yellow_layer;
+  #endif
+} JourneyDetailsUI;
 
 // Display Buffers for Countdown Window
 typedef struct {
@@ -146,9 +178,11 @@ typedef struct {
   AppMenuLayers menu_layers;
   MainWindowUI main_ui;
   CountdownWindowUI countdown_ui;
+  JourneyDetailsUI journey_details_ui;
   DisplayBuffers buffers;
   StationData stations;
   TripData trips;
+  TripLegsData trip_legs[MAX_TRIPS];
   SelectedJourney journey;
   AppState state;
 } AppData;

@@ -216,6 +216,95 @@ function sendRequest(url, sendToWatchFunction){
   xhr.send();
 }
 
+function abbreviateStation(name) {
+  if (!name) return "?";
+  if (name.length <= 15) return name;
+  name = name.replace("Centraal", "C");
+  name = name.replace("Noord", "N");
+  name = name.replace("Zuid", "Z");
+  name = name.replace("Oost", "O");
+  name = name.replace("West", "W");
+  if (name.length <= 15) return name;
+  return name.substring(0, 14) + ".";
+}
+
+function extractTime(dateTimeString) {
+  if (!dateTimeString) return "?";
+  // Format is like "2025-01-27T12:34:00+0100", extract HH:MM
+  var match = dateTimeString.match(/T(\d{2}:\d{2})/);
+  return match ? match[1] : "?";
+}
+
+function calculateDuration(departureDateTime, arrivalDateTime) {
+  if (!departureDateTime || !arrivalDateTime) return "?";
+  var depTime = Date.parse(departureDateTime.slice(0, -2) + ":" + departureDateTime.slice(-2));
+  var arrTime = Date.parse(arrivalDateTime.slice(0, -2) + ":" + arrivalDateTime.slice(-2));
+  if (isNaN(depTime) || isNaN(arrTime)) return "?";
+  var diffMinutes = Math.round((arrTime - depTime) / 60000);
+  if (diffMinutes < 60) {
+    return diffMinutes + "m";
+  }
+  var hours = Math.floor(diffMinutes / 60);
+  var mins = diffMinutes % 60;
+  return hours + "h" + (mins > 0 ? mins + "m" : "");
+}
+
+function sendLegData(trips) {
+  var legQueue = [];
+
+  for (var t = 0; t < trips.length; t++) {
+    var legs = trips[t].legs;
+    var legCount = Math.min(legs.length, 4);
+
+    for (var l = 0; l < legCount; l++) {
+      var departureDateTime = legs[l].origin.actualDateTime || legs[l].origin.plannedDateTime;
+      var arrivalDateTime = legs[l].destination.actualDateTime || legs[l].destination.plannedDateTime;
+      legQueue.push({
+        tripIndex: t,
+        legIndex: l,
+        legCount: legCount,
+        departureStation: abbreviateStation(legs[l].origin.name),
+        departurePlatform: legs[l].origin.actualTrack || legs[l].origin.plannedTrack || "?",
+        departureTime: extractTime(departureDateTime),
+        arrivalStation: abbreviateStation(legs[l].destination.name),
+        arrivalTime: extractTime(arrivalDateTime),
+        duration: calculateDuration(departureDateTime, arrivalDateTime)
+      });
+    }
+  }
+
+  var sendIndex = 0;
+
+  function sendNextLeg() {
+    if (sendIndex >= legQueue.length) {
+      return;
+    }
+
+    var leg = legQueue[sendIndex];
+
+    Pebble.sendAppMessage({
+      "LEG_TRIP_INDEX": leg.tripIndex,
+      "LEG_INDEX": leg.legIndex,
+      "LEG_COUNT": leg.legCount,
+      "LEG_DEPARTURE_STATION": leg.departureStation,
+      "LEG_DEPARTURE_PLATFORM": leg.departurePlatform,
+      "LEG_DEPARTURE_TIME": leg.departureTime,
+      "LEG_ARRIVAL_STATION": leg.arrivalStation,
+      "LEG_ARRIVAL_TIME": leg.arrivalTime,
+      "LEG_DURATION": leg.duration
+    }, function() {
+      sendIndex++;
+      setTimeout(sendNextLeg, 100);
+    }, function(e) {
+      console.log("Failed to send leg message: " + e.error.message);
+      sendIndex++;
+      setTimeout(sendNextLeg, 200);
+    });
+  }
+
+  sendNextLeg();
+}
+
 function processTripData(data) {
   if (!data.trips || data.trips.length === 0) {
     console.log("No trips found");
@@ -224,19 +313,21 @@ function processTripData(data) {
     });
     return;
   }
-  
+
 
   var trips = data.trips.slice(0, 5); // Max 5 trips
-  
-  
+
+
   // Send each trip to the watch with a delay to avoid buffer overflow
   var sendIndex = 0;
-  
+
   function sendNextTrip() {
     if (sendIndex >= trips.length) {
+      // All trips sent, now send leg data
+      sendLegData(trips);
       return;
     }
-    
+
     var actualDepartureTime = trips[sendIndex].legs[0].origin.actualDateTime;
     var plannedDepartureTime = trips[sendIndex].legs[0].origin.plannedDateTime;
     var actualArrivalTime = trips[sendIndex].legs[trips[sendIndex].transfers].destination.actualDateTime;
@@ -250,19 +341,19 @@ function processTripData(data) {
     var tripDelay = "On time";
     if (delay > 0) {
       tripDelay = "+" + delay;
-    }    
+    }
 
     if (trips[sendIndex].status == "CANCELLED") {
       actualDepartureTime = plannedDepartureTime;
       tripDelay = "Cancelled";
       actualArrivalTime = "--:--";
     }
-    
+
     if (actualDepartureTime == undefined){
       console.log('Actual departure time is undefined, value gotten from NS API is:');
       console.log(trips[sendIndex].legs[0].origin.actualDepartureTime);
     }
-    
+
     var departurePlatform = trips[sendIndex].legs[0].origin.actualTrack;
     var tripTransfers = trips[sendIndex].transfers;
     var currentIndex = sendIndex;
@@ -290,7 +381,7 @@ function processTripData(data) {
       setTimeout(sendNextTrip, 200);
     });
   }
-  
+
   sendNextTrip();
 }
 
