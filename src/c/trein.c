@@ -301,14 +301,10 @@ static void prv_trip_leg_layer_update_proc(Layer *layer, GContext *ctx) {
 
 static void prv_update_countdown_display() {
   text_layer_set_text(s_app.countdown_ui.platform_number_layer, s_app.trips.platform[s_app.journey.selected_trip_index]);
-  if (strncmp (s_app.trips.delay[s_app.journey.selected_trip_index],"Cancelled",9) == 0) {
-    snprintf(s_app.buffers.delay_buffer, sizeof(s_app.buffers.delay_buffer), "%s", "");
-    text_layer_set_text(s_app.countdown_ui.delay_layer, s_app.buffers.delay_buffer);
-  }
-  else {
-    snprintf(s_app.buffers.delay_buffer, sizeof(s_app.buffers.delay_buffer), "%s", s_app.trips.delay[s_app.journey.selected_trip_index]);
-    text_layer_set_text(s_app.countdown_ui.delay_layer, s_app.buffers.delay_buffer);
-  }
+
+  // Always show the delay text (including "Cancelled" if applicable)
+  snprintf(s_app.buffers.delay_buffer, sizeof(s_app.buffers.delay_buffer), "%s", s_app.trips.delay[s_app.journey.selected_trip_index]);
+  text_layer_set_text(s_app.countdown_ui.delay_layer, s_app.buffers.delay_buffer);
 
   if (s_app.trips.planned_departures[s_app.journey.selected_trip_index][0] != '\0') {
     strncpy(s_app.buffers.departure_time_buffer, &s_app.trips.planned_departures[s_app.journey.selected_trip_index][11], 5);
@@ -886,11 +882,7 @@ static void prv_countdown_click_config_provider(void *context) {
   text_layer_set_text_alignment(s_app.countdown_ui.time_arrow_layer, GTextAlignmentCenter);
   text_layer_set_background_color(s_app.countdown_ui.time_arrow_layer, GColorClear);
   text_layer_set_text_color(s_app.countdown_ui.time_arrow_layer, GColorBlack);
-  #ifdef PBL_PLATFORM_APLITE
   text_layer_set_text(s_app.countdown_ui.time_arrow_layer, ">");
-  #else
-  text_layer_set_text(s_app.countdown_ui.time_arrow_layer, "→");
-  #endif
   layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.time_arrow_layer));
 
   s_app.countdown_ui.arrival_time_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(62, platform_y + 4, 30, 20), GRect(x_offset + (is_large_display ? 60 : 45), platform_y + 2, is_large_display ? 40 : 30, 20)));
