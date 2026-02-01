@@ -31,24 +31,77 @@ function getApiKey() {
   return DEFAULT_API_KEY;
 }
 
+function getFavourites() {
+  try {
+    var favourites = localStorage.getItem("favourites");
+    if (favourites) {
+      return JSON.parse(favourites);
+    }
+  } catch (e) {
+    console.log("Error reading favourites from localStorage: " + e);
+  }
+  return [];
+}
+
+function sendFavouritesToWatch() {
+  var favourites = getFavourites();
+  if (favourites.length === 0) {
+    return;
+  }
+
+  var sendIndex = 0;
+
+  function sendNextFavourite() {
+    if (sendIndex >= favourites.length) {
+      return;
+    }
+
+    var fav = favourites[sendIndex];
+    var currentIndex = sendIndex;
+
+    Pebble.sendAppMessage({
+      "FAVOURITE_INDEX": currentIndex,
+      "FAVOURITE_CODE": fav.code,
+      "FAVOURITE_NAME": fav.name,
+      "FAVOURITE_COUNT": favourites.length
+    }, function() {
+      console.log("Favourite sent: " + fav.name);
+      sendIndex++;
+      setTimeout(sendNextFavourite, 100);
+    }, function(e) {
+      console.log("Failed to send favourite: " + e.error.message);
+      sendIndex++;
+      setTimeout(sendNextFavourite, 200);
+    });
+  }
+
+  sendNextFavourite();
+}
+
 Pebble.addEventListener("showConfiguration", function(e) {
   var url = "https://guusbeckett.github.io/config.html";
   var currentKey = getApiKey();
-  
-  Pebble.openURL(url + "?api_key=" + encodeURIComponent(currentKey));
+  var favourites = getFavourites();
+
+  Pebble.openURL(url + "?api_key=" + encodeURIComponent(currentKey) + "&favourites=" + encodeURIComponent(JSON.stringify(favourites)));
 });
 
 Pebble.addEventListener("webviewclosed", function(e) {
   if (!e.response) {
     return;
   }
-  
+
   var settings;
   try {
     settings = JSON.parse(decodeURIComponent(e.response));
     if (settings.api_key) {
       localStorage.setItem("api_key", settings.api_key);
       console.log("Saved new API key.");
+    }
+    if (settings.favourites) {
+      localStorage.setItem("favourites", JSON.stringify(settings.favourites));
+      console.log("Saved favourites: " + settings.favourites.length);
+      sendFavouritesToWatch();
     }
   } catch (err) {
     console.log("Error parsing settings: " + err);
@@ -58,6 +111,7 @@ Pebble.addEventListener("webviewclosed", function(e) {
 
 Pebble.addEventListener("ready", function(e) {
   console.log("PebbleKit JS ready!");
+  sendFavouritesToWatch();
   requestLocationAndFetchStations();
 });
 
@@ -137,41 +191,54 @@ function processStationData(data) {
     });
     return;
   }
-  
-  var stations = data.payload.slice(0, 8); // Max 8 stations
-  
-  console.log("Processing " + stations.length + " stations");
-  
+
+  var favourites = getFavourites();
+  var favouriteCodes = {};
+  for (var i = 0; i < favourites.length; i++) {
+    favouriteCodes[favourites[i].code] = true;
+  }
+
+  // Filter out favourites from nearby stations to avoid duplicates
+  var nearbyStations = [];
+  for (var j = 0; j < data.payload.length && nearbyStations.length < 8; j++) {
+    var code = data.payload[j].code;
+    if (!favouriteCodes[code]) {
+      nearbyStations.push({
+        code: code,
+        name: data.payload[j].namen.middel
+      });
+    }
+  }
+
+  console.log("Processing " + nearbyStations.length + " nearby stations");
+
   var sendIndex = 0;
-  
+
   function sendNextStation() {
-    if (sendIndex >= stations.length) {
+    if (sendIndex >= nearbyStations.length) {
       return;
     }
-    
-    var stationName = stations[sendIndex].namen.middel;
-    var stationCode = stations[sendIndex].code;
+
+    var stationName = nearbyStations[sendIndex].name;
+    var stationCode = nearbyStations[sendIndex].code;
     var currentIndex = sendIndex;
-    
-    
+
     Pebble.sendAppMessage({
       "STATION_INDEX": currentIndex,
       "STATION_CODE": stationCode,
       "STATION_NAME": stationName,
-      "STATION_COUNT": stations.length
+      "STATION_COUNT": nearbyStations.length
     }, function() {
       console.log("Message sent successfully");
       sendIndex++;
-      // Wait 20ms before sending next message to avoid buffer overflow
       setTimeout(sendNextStation, 100);
     }, function(e) {
       console.log("Failed to send message: " + e.error.message);
       sendIndex++;
-      // Retry after a longer delay on error
       setTimeout(sendNextStation, 200);
     });
   }
-  
+
   sendNextStation();
 }
 

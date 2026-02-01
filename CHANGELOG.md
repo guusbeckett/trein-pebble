@@ -5,6 +5,15 @@ All notable changes to the Trein Pebble app will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 01-02-2026
+
+### Added
+
+- Favourite stations feature: save up to 5 favourite stations via the settings page
+- Favourites appear at the top of both start station and destination station menus
+- Section headers in station menus (Favourites, Nearby, Top Stations, By Letter)
+- Duplicate filtering: favourite stations that are also nearby won't appear twice
+
 ## [1.4.0] - 29-01-2026
 
 ### Added
@@ -68,7 +77,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Future Plans
 
 ### Planned Features
-- Favorite routes storage
 - Updated information about delays (currently we only get the delay at the time loading in the journeys)
 - Information about the transfers during your train journey 
 

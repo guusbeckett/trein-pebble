@@ -425,23 +425,62 @@ static void prv_fallback_timer_callback(void *context) {
   s_app.state.fallback_timer = NULL;
 }
 
+static uint16_t prv_menu_get_num_sections_callback(MenuLayer *menu_layer, void *context) {
+  return (s_app.favourites.count > 0) ? 2 : 1;
+}
+
 static uint16_t prv_menu_get_num_rows_callback(MenuLayer *menu_layer, uint16_t section_index, void *context) {
+  if (s_app.favourites.count > 0) {
+    if (section_index == 0) return s_app.favourites.count;
+    return s_app.stations.loaded ? s_app.stations.count : 1;
+  }
   return s_app.stations.loaded ? s_app.stations.count : 1;
 }
 
+static int16_t prv_menu_get_header_height_callback(MenuLayer *menu_layer, uint16_t section_index, void *context) {
+  return MENU_CELL_BASIC_HEADER_HEIGHT;
+}
+
+static void prv_menu_draw_header_callback(GContext *ctx, const Layer *cell_layer, uint16_t section_index, void *context) {
+  const char *header;
+  if (s_app.favourites.count > 0) {
+    header = (section_index == 0) ? "Favourites" : "Nearby";
+  } else {
+    header = "Nearby";
+  }
+  menu_cell_basic_header_draw(ctx, cell_layer, header);
+}
+
 static void prv_menu_draw_row_callback(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index, void *context) {
-  if (s_app.stations.loaded && cell_index->row < s_app.stations.count) {
-    menu_cell_basic_draw(ctx, cell_layer, s_app.stations.names[cell_index->row], NULL, NULL);
+  int section = cell_index->section;
+  int row = cell_index->row;
+
+  if (s_app.favourites.count > 0 && section == 0) {
+    menu_cell_basic_draw(ctx, cell_layer, s_app.favourites.names[row], NULL, NULL);
+    return;
+  }
+
+  if (s_app.stations.loaded && row < s_app.stations.count) {
+    menu_cell_basic_draw(ctx, cell_layer, s_app.stations.names[row], NULL, NULL);
   } else {
     menu_cell_basic_draw(ctx, cell_layer, "Loading...", NULL, NULL);
   }
 }
 
 static void prv_menu_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {
-  if (!s_app.stations.loaded) { return; }
-  s_app.state.last_selected_index = cell_index->row;
-  strncpy(s_app.journey.start_station_name, s_app.stations.names[cell_index->row], sizeof(s_app.journey.start_station_name) - 1);
-  strncpy(s_app.journey.start_station_code, s_app.stations.codes[cell_index->row], sizeof(s_app.journey.start_station_code) - 1);
+  int section = cell_index->section;
+  int row = cell_index->row;
+
+  if (s_app.favourites.count > 0 && section == 0) {
+    strncpy(s_app.journey.start_station_name, s_app.favourites.names[row], sizeof(s_app.journey.start_station_name) - 1);
+    strncpy(s_app.journey.start_station_code, s_app.favourites.codes[row], sizeof(s_app.journey.start_station_code) - 1);
+  } else {
+    if (!s_app.stations.loaded) { return; }
+    s_app.state.last_selected_index = row;
+    strncpy(s_app.journey.start_station_name, s_app.stations.names[row], sizeof(s_app.journey.start_station_name) - 1);
+    strncpy(s_app.journey.start_station_code, s_app.stations.codes[row], sizeof(s_app.journey.start_station_code) - 1);
+  }
+
   if (!s_app.windows.dest_menu_window) {
     s_app.windows.dest_menu_window = window_create();
     window_set_window_handlers(s_app.windows.dest_menu_window, (WindowHandlers) {
@@ -457,7 +496,10 @@ static void prv_menu_window_load(Window *window) {
   s_app.menu_layers.menu_layer = menu_layer_create(bounds);
   menu_layer_set_click_config_onto_window(s_app.menu_layers.menu_layer, window);
   menu_layer_set_callbacks(s_app.menu_layers.menu_layer, NULL, (MenuLayerCallbacks) {
+    .get_num_sections = prv_menu_get_num_sections_callback,
     .get_num_rows = prv_menu_get_num_rows_callback,
+    .get_header_height = prv_menu_get_header_height_callback,
+    .draw_header = prv_menu_draw_header_callback,
     .draw_row = prv_menu_draw_row_callback,
     .select_click = prv_menu_select_callback,
   });
@@ -509,36 +551,79 @@ static void prv_alpha_menu_window_load(Window *window) {
 
 static void prv_alpha_menu_window_unload(Window *window) { menu_layer_destroy(s_app.menu_layers.alpha_menu_layer); }
 
-static uint16_t prv_dest_menu_get_num_sections_callback(MenuLayer *menu_layer, void *context) { return 2; }
+static uint16_t prv_dest_menu_get_num_sections_callback(MenuLayer *menu_layer, void *context) {
+  return (s_app.favourites.count > 0) ? 3 : 2;
+}
 
 static uint16_t prv_dest_menu_get_num_rows_callback(MenuLayer *menu_layer, uint16_t section_index, void *context) {
+  if (s_app.favourites.count > 0) {
+    if (section_index == 0) return s_app.favourites.count;
+    if (section_index == 1) return NUM_TOP_STATIONS;
+    return ALPHABET_INDEX_COUNT;
+  }
   return (section_index == 0) ? NUM_TOP_STATIONS : ALPHABET_INDEX_COUNT;
 }
 
+static int16_t prv_dest_menu_get_header_height_callback(MenuLayer *menu_layer, uint16_t section_index, void *context) {
+  return MENU_CELL_BASIC_HEADER_HEIGHT;
+}
+
 static void prv_dest_menu_draw_header_callback(GContext *ctx, const Layer *cell_layer, uint16_t section_index, void *context) {
-  snprintf(s_app.buffers.section_header, sizeof(s_app.buffers.section_header), (section_index == 0) ? "Destination" : "By Letter");
+  const char *header;
+  if (s_app.favourites.count > 0) {
+    if (section_index == 0) header = "Favourites";
+    else if (section_index == 1) header = "Top Stations";
+    else header = "By Letter";
+  } else {
+    header = (section_index == 0) ? "Destination" : "By Letter";
+  }
+  snprintf(s_app.buffers.section_header, sizeof(s_app.buffers.section_header), "%s", header);
   menu_cell_basic_header_draw(ctx, cell_layer, s_app.buffers.section_header);
 }
 
 static void prv_dest_menu_draw_row_callback(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index, void *context) {
-  if (cell_index->section == 0) {
-    const Station *station = &top_stations[cell_index->row];
+  int section = cell_index->section;
+  int row = cell_index->row;
+
+  if (s_app.favourites.count > 0) {
+    if (section == 0) {
+      menu_cell_basic_draw(ctx, cell_layer, s_app.favourites.names[row], NULL, NULL);
+      return;
+    }
+    section--;
+  }
+
+  if (section == 0) {
+    const Station *station = &top_stations[row];
     menu_cell_basic_draw(ctx, cell_layer, station->name, NULL, NULL);
   } else {
-    s_app.buffers.letter_str[0] = alphabet_index[cell_index->row].letter;
+    s_app.buffers.letter_str[0] = alphabet_index[row].letter;
     s_app.buffers.letter_str[1] = '\0';
     menu_cell_basic_draw(ctx, cell_layer, s_app.buffers.letter_str, NULL, NULL);
   }
 }
 
 static void prv_dest_menu_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {
-  if (cell_index->section == 0) {
-    const Station *station = &top_stations[cell_index->row];
+  int section = cell_index->section;
+  int row = cell_index->row;
+
+  if (s_app.favourites.count > 0) {
+    if (section == 0) {
+      strncpy(s_app.journey.dest_station_code, s_app.favourites.codes[row], sizeof(s_app.journey.dest_station_code) - 1);
+      strncpy(s_app.journey.dest_station_name, s_app.favourites.names[row], sizeof(s_app.journey.dest_station_name) - 1);
+      prv_send_trip_request();
+      return;
+    }
+    section--;
+  }
+
+  if (section == 0) {
+    const Station *station = &top_stations[row];
     strncpy(s_app.journey.dest_station_code, station->code, sizeof(s_app.journey.dest_station_code) - 1);
     strncpy(s_app.journey.dest_station_name, station->name, sizeof(s_app.journey.dest_station_name) - 1);
     prv_send_trip_request();
   } else {
-    s_app.state.selected_alphabet_index = cell_index->row;
+    s_app.state.selected_alphabet_index = row;
     if (!s_app.windows.alpha_menu_window) {
       s_app.windows.alpha_menu_window = window_create();
       window_set_window_handlers(s_app.windows.alpha_menu_window, (WindowHandlers) {
@@ -557,6 +642,7 @@ static void prv_dest_menu_window_load(Window *window) {
   menu_layer_set_callbacks(s_app.menu_layers.dest_menu_layer, NULL, (MenuLayerCallbacks) {
     .get_num_sections = prv_dest_menu_get_num_sections_callback,
     .get_num_rows = prv_dest_menu_get_num_rows_callback,
+    .get_header_height = prv_dest_menu_get_header_height_callback,
     .draw_header = prv_dest_menu_draw_header_callback,
     .draw_row = prv_dest_menu_draw_row_callback,
     .select_click = prv_dest_menu_select_callback,
@@ -594,6 +680,10 @@ static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) 
   Tuple *leg_arrival_station_tuple = dict_find(iter, MESSAGE_KEY_LEG_ARRIVAL_STATION);
   Tuple *leg_arrival_time_tuple = dict_find(iter, MESSAGE_KEY_LEG_ARRIVAL_TIME);
   Tuple *leg_duration_tuple = dict_find(iter, MESSAGE_KEY_LEG_DURATION);
+  Tuple *favourite_index_tuple = dict_find(iter, MESSAGE_KEY_FAVOURITE_INDEX);
+  Tuple *favourite_code_tuple = dict_find(iter, MESSAGE_KEY_FAVOURITE_CODE);
+  Tuple *favourite_name_tuple = dict_find(iter, MESSAGE_KEY_FAVOURITE_NAME);
+  Tuple *favourite_count_tuple = dict_find(iter, MESSAGE_KEY_FAVOURITE_COUNT);
   
   if (error_tuple) {
     text_layer_set_text(s_app.main_ui.text_layer, "Add API key in settings...");
@@ -710,6 +800,32 @@ static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) 
       s_app.trip_legs[trip_idx].legs[leg_idx].duration[MAX_LEG_DURATION_LENGTH - 1] = '\0';
 
       s_app.trip_legs[trip_idx].leg_count = leg_count;
+    }
+  }
+
+  // Handle favourite station messages
+  if (favourite_index_tuple && favourite_code_tuple && favourite_name_tuple && favourite_count_tuple) {
+    int index = favourite_index_tuple->value->int32;
+    const char *code = favourite_code_tuple->value->cstring;
+    const char *name = favourite_name_tuple->value->cstring;
+    int count = favourite_count_tuple->value->int32;
+
+    if (index >= 0 && index < MAX_FAVOURITES) {
+      strncpy(s_app.favourites.codes[index], code, MAX_STATION_CODE_LENGTH - 1);
+      s_app.favourites.codes[index][MAX_STATION_CODE_LENGTH - 1] = '\0';
+      strncpy(s_app.favourites.names[index], name, MAX_STATION_NAME_LENGTH - 1);
+      s_app.favourites.names[index][MAX_STATION_NAME_LENGTH - 1] = '\0';
+
+      if (index + 1 > s_app.favourites.count) {
+        s_app.favourites.count = index + 1;
+      }
+      if (s_app.favourites.count >= count) {
+        s_app.favourites.loaded = true;
+        // Reload start menu if it exists to show favourites section
+        if (s_app.menu_layers.menu_layer) {
+          menu_layer_reload_data(s_app.menu_layers.menu_layer);
+        }
+      }
     }
   }
 }

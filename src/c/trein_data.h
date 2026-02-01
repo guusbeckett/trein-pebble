@@ -129,6 +129,16 @@ typedef struct {
   bool loaded;
 } StationData;
 
+// Favourite Stations Data
+#define MAX_FAVOURITES 5
+
+typedef struct {
+  char names[MAX_FAVOURITES][MAX_STATION_NAME_LENGTH];
+  char codes[MAX_FAVOURITES][MAX_STATION_CODE_LENGTH];
+  int count;
+  bool loaded;
+} FavouriteData;
+
 // Trip Data (journey information)
 typedef struct {
   char planned_departures[MAX_TRIPS][MAX_DATE_TIME_LENGTH];
@@ -181,6 +191,7 @@ typedef struct {
   JourneyDetailsUI journey_details_ui;
   DisplayBuffers buffers;
   StationData stations;
+  FavouriteData favourites;
   TripData trips;
   TripLegsData trip_legs[MAX_TRIPS];
   SelectedJourney journey;
