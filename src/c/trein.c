@@ -426,14 +426,10 @@ static void prv_fallback_timer_callback(void *context) {
 }
 
 static uint16_t prv_menu_get_num_sections_callback(MenuLayer *menu_layer, void *context) {
-  return (s_app.favourites.count > 0) ? 2 : 1;
+  return 1;
 }
 
 static uint16_t prv_menu_get_num_rows_callback(MenuLayer *menu_layer, uint16_t section_index, void *context) {
-  if (s_app.favourites.count > 0) {
-    if (section_index == 0) return s_app.favourites.count;
-    return s_app.stations.loaded ? s_app.stations.count : 1;
-  }
   return s_app.stations.loaded ? s_app.stations.count : 1;
 }
 
@@ -442,23 +438,18 @@ static int16_t prv_menu_get_header_height_callback(MenuLayer *menu_layer, uint16
 }
 
 static void prv_menu_draw_header_callback(GContext *ctx, const Layer *cell_layer, uint16_t section_index, void *context) {
-  const char *header;
-  if (s_app.favourites.count > 0) {
-    header = (section_index == 0) ? "Favourites" : "Nearby";
-  } else {
-    header = "Nearby";
-  }
-  menu_cell_basic_header_draw(ctx, cell_layer, header);
+  #ifdef PBL_ROUND
+  GRect bounds = layer_get_bounds(cell_layer);
+  graphics_context_set_text_color(ctx, GColorBlack);
+  graphics_draw_text(ctx, "Nearby", fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                     bounds, GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+  #else
+  menu_cell_basic_header_draw(ctx, cell_layer, "Nearby");
+  #endif
 }
 
 static void prv_menu_draw_row_callback(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index, void *context) {
-  int section = cell_index->section;
   int row = cell_index->row;
-
-  if (s_app.favourites.count > 0 && section == 0) {
-    menu_cell_basic_draw(ctx, cell_layer, s_app.favourites.names[row], NULL, NULL);
-    return;
-  }
 
   if (s_app.stations.loaded && row < s_app.stations.count) {
     menu_cell_basic_draw(ctx, cell_layer, s_app.stations.names[row], NULL, NULL);
@@ -468,18 +459,12 @@ static void prv_menu_draw_row_callback(GContext *ctx, const Layer *cell_layer, M
 }
 
 static void prv_menu_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {
-  int section = cell_index->section;
   int row = cell_index->row;
 
-  if (s_app.favourites.count > 0 && section == 0) {
-    strncpy(s_app.journey.start_station_name, s_app.favourites.names[row], sizeof(s_app.journey.start_station_name) - 1);
-    strncpy(s_app.journey.start_station_code, s_app.favourites.codes[row], sizeof(s_app.journey.start_station_code) - 1);
-  } else {
-    if (!s_app.stations.loaded) { return; }
-    s_app.state.last_selected_index = row;
-    strncpy(s_app.journey.start_station_name, s_app.stations.names[row], sizeof(s_app.journey.start_station_name) - 1);
-    strncpy(s_app.journey.start_station_code, s_app.stations.codes[row], sizeof(s_app.journey.start_station_code) - 1);
-  }
+  if (!s_app.stations.loaded) { return; }
+  s_app.state.last_selected_index = row;
+  strncpy(s_app.journey.start_station_name, s_app.stations.names[row], sizeof(s_app.journey.start_station_name) - 1);
+  strncpy(s_app.journey.start_station_code, s_app.stations.codes[row], sizeof(s_app.journey.start_station_code) - 1);
 
   if (!s_app.windows.dest_menu_window) {
     s_app.windows.dest_menu_window = window_create();
@@ -575,10 +560,16 @@ static void prv_dest_menu_draw_header_callback(GContext *ctx, const Layer *cell_
     else if (section_index == 1) header = "Top Stations";
     else header = "By Letter";
   } else {
-    header = (section_index == 0) ? "Destination" : "By Letter";
+    header = (section_index == 0) ? "Top Stations" : "By Letter";
   }
-  snprintf(s_app.buffers.section_header, sizeof(s_app.buffers.section_header), "%s", header);
-  menu_cell_basic_header_draw(ctx, cell_layer, s_app.buffers.section_header);
+  #ifdef PBL_ROUND
+  GRect bounds = layer_get_bounds(cell_layer);
+  graphics_context_set_text_color(ctx, GColorBlack);
+  graphics_draw_text(ctx, header, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                     bounds, GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+  #else
+  menu_cell_basic_header_draw(ctx, cell_layer, header);
+  #endif
 }
 
 static void prv_dest_menu_draw_row_callback(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index, void *context) {

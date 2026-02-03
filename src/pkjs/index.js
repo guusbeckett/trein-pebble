@@ -192,22 +192,12 @@ function processStationData(data) {
     return;
   }
 
-  var favourites = getFavourites();
-  var favouriteCodes = {};
-  for (var i = 0; i < favourites.length; i++) {
-    favouriteCodes[favourites[i].code] = true;
-  }
-
-  // Filter out favourites from nearby stations to avoid duplicates
   var nearbyStations = [];
   for (var j = 0; j < data.payload.length && nearbyStations.length < 8; j++) {
-    var code = data.payload[j].code;
-    if (!favouriteCodes[code]) {
-      nearbyStations.push({
-        code: code,
-        name: data.payload[j].namen.middel
-      });
-    }
+    nearbyStations.push({
+      code: data.payload[j].code,
+      name: data.payload[j].namen.middel
+    });
   }
 
   console.log("Processing " + nearbyStations.length + " nearby stations");

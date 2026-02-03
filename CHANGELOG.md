@@ -5,13 +5,25 @@ All notable changes to the Trein Pebble app will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 03-02-2026
+
+### Changed
+
+- Favourites now only appear in the destination station menu (not the departure station menu)
+- This improves usability as the departure station is typically the one you're at
+- Centered section headers on round screens (Chalk) for better readability
+
+### Fixed
+
+- Stations that are in your favourites now correctly appear in the nearby stations list
+
 ## [1.5.0] - 01-02-2026
 
 ### Added
 
 - Favourite stations feature: save up to 5 favourite stations via the settings page
-- Favourites appear at the top of both start station and destination station menus
-- Section headers in station menus (Favourites, Nearby, Top Stations, By Letter)
+- Favourites appear at the top of destination station menu
+- Section headers in station menus (Favourites, Top Stations, By Letter)
 - Duplicate filtering: favourite stations that are also nearby won't appear twice
 
 ## [1.4.0] - 29-01-2026

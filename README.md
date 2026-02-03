@@ -8,7 +8,8 @@ A Pebble smartwatch app that shows live train information from Nederlandse Spoor
 - Countdown timer to your next train
 - Platform information and delays
 - Automatic station detection based on your location
-- Favourite stations: save up to 5 favourite stations for quick access
+- Favourite stations: save up to 5 favourite stations for quick access when selecting your destination
+- Optimized UI for round screens (Pebble Time Round)
 - Support for all Pebble models (Aplite, Basalt, Chalk, Diorite, Emery, Flint)
 
 ## Prerequisites
