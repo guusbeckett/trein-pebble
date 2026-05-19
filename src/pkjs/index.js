@@ -125,6 +125,10 @@ Pebble.addEventListener("appmessage", function(e) {
     var destCode = e.payload.DEST_STATION_CODE;
     requestTrips(startCode, destCode);
   }
+
+  if (e.payload.REQUEST_PIN) {
+    pinToTimeline(e.payload);
+  }
 });
 
 function requestLocationAndFetchStations() {  
@@ -325,7 +329,9 @@ function sendLegData(trips) {
         departureTime: extractTime(departureDateTime),
         arrivalStation: abbreviateStation(legs[l].destination.name),
         arrivalTime: extractTime(arrivalDateTime),
-        duration: calculateDuration(departureDateTime, arrivalDateTime)
+        duration: calculateDuration(departureDateTime, arrivalDateTime),
+        depEpoch: convertIsoDateToEpoch(departureDateTime),
+        arrEpoch: convertIsoDateToEpoch(arrivalDateTime)
       });
     }
   }
@@ -348,7 +354,9 @@ function sendLegData(trips) {
       "LEG_DEPARTURE_TIME": leg.departureTime,
       "LEG_ARRIVAL_STATION": leg.arrivalStation,
       "LEG_ARRIVAL_TIME": leg.arrivalTime,
-      "LEG_DURATION": leg.duration
+      "LEG_DURATION": leg.duration,
+      "LEG_DEPARTURE_EPOCH": leg.depEpoch,
+      "LEG_ARRIVAL_EPOCH": leg.arrEpoch
     }, function() {
       sendIndex++;
       setTimeout(sendNextLeg, 100);
@@ -362,6 +370,64 @@ function sendLegData(trips) {
   sendNextLeg();
 }
 
+function createLegPinFromPayload(payload) {
+  var tripIndex = payload.PIN_TRIP_INDEX;
+  var legIndex = payload.PIN_LEG_INDEX;
+  var depEpoch = payload.PIN_DEP_EPOCH;
+  var arrEpoch = payload.PIN_ARR_EPOCH;
+  var depStation = payload.PIN_DEP_STATION || '?';
+  var arrStation = payload.PIN_ARR_STATION || '?';
+  var platform = payload.PIN_PLATFORM || '?';
+
+  var depDate = new Date(depEpoch * 1000);
+  var arrDate = new Date(arrEpoch * 1000);
+  var depTime = ('0' + depDate.getHours()).slice(-2) + ':' + ('0' + depDate.getMinutes()).slice(-2);
+  var arrTime = ('0' + arrDate.getHours()).slice(-2) + ':' + ('0' + arrDate.getMinutes()).slice(-2);
+  var durationMins = Math.round((arrEpoch - depEpoch) / 60);
+
+  return {
+    id: 'trein-' + tripIndex + '-' + legIndex,
+    time: depDate.toISOString(),
+    duration: durationMins,
+    layout: {
+      type: 'genericPin',
+      title: abbreviateStation(depStation) + ' → ' + abbreviateStation(arrStation),
+      subtitle: 'Platform ' + platform,
+      tinyIcon: 'system://images/SCHEDULED_FLIGHT',
+      body: 'Dep: ' + depTime + '  Arr: ' + arrTime
+    }
+  };
+}
+
+function pushPin(token, pin, callback) {
+  var xhr = new XMLHttpRequest();
+  xhr.open('PUT', 'https://timeline-api.getpebble.com/v1/user/pins/' + pin.id);
+  xhr.setRequestHeader('Content-Type', 'application/json');
+  xhr.setRequestHeader('X-User-Token', token);
+  xhr.timeout = 10000;
+  xhr.onload = function() { callback(xhr.status >= 200 && xhr.status < 300); };
+  xhr.onerror = function() { callback(false); };
+  xhr.ontimeout = function() { callback(false); };
+  xhr.send(JSON.stringify(pin));
+}
+
+function sendPinStatus(success) {
+  Pebble.sendAppMessage({'PIN_STATUS': success ? 1 : 0});
+}
+
+function pinToTimeline(payload) {
+  var isLast = payload.PIN_IS_LAST;
+  var pin = createLegPinFromPayload(payload);
+
+  Pebble.getTimelineToken(function(token) {
+    pushPin(token, pin, function(ok) {
+      if (isLast) sendPinStatus(ok);
+    });
+  }, function() {
+    if (isLast) sendPinStatus(false);
+  });
+}
+
 function processTripData(data) {
   if (!data.trips || data.trips.length === 0) {
     console.log("No trips found");
@@ -373,7 +439,6 @@ function processTripData(data) {
 
 
   var trips = data.trips.slice(0, 5); // Max 5 trips
-
 
   // Send each trip to the watch with a delay to avoid buffer overflow
   var sendIndex = 0;

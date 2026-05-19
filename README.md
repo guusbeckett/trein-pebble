@@ -8,7 +8,9 @@ A Pebble smartwatch app that shows live train information from Nederlandse Spoor
 - Countdown timer to your next train
 - Platform information and delays
 - Automatic station detection based on your location
+- Journey details screen with leg-by-leg breakdown for multi-transfer trips
 - Favourite stations: save up to 5 favourite stations for quick access when selecting your destination
+- Timeline pinning: pin a single leg or your entire journey to the Pebble Timeline
 - Optimized UI for round screens (Pebble Time Round)
 - Support for all Pebble models (Aplite, Basalt, Chalk, Diorite, Emery, Flint)
 
@@ -44,7 +46,9 @@ To use this app, you need:
 2. The app will automatically detect nearby train stations using your location
 3. Select your departure and destination stations
 4. View upcoming trains with departure times, platforms, and delay information
-5. Use the countdown timer to see exactly how much time you have before your next train, maybe you can still grab a drink at AH To Go!
+5. Press SELECT on the countdown screen to view journey details with each leg
+6. Press SELECT on a leg to pin it (or the whole journey) to the Pebble Timeline
+7. Use the countdown timer to see exactly how much time you have before your next train, maybe you can still grab a drink at AH To Go!
 
 ## Development
 

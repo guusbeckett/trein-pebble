@@ -5,6 +5,13 @@ All notable changes to the Trein Pebble app will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] - 18-05-2026
+
+### Added
+
+- Timeline pinning: press SELECT on a leg in the journey details screen to pin that leg or the entire journey to the Pebble Timeline
+- A short vibration confirms a successful pin; a long vibration indicates failure
+
 ## [1.6.0] - 03-02-2026
 
 ### Changed
@@ -90,7 +97,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Planned Features
 - Updated information about delays (currently we only get the delay at the time loading in the journeys)
-- Information about the transfers during your train journey 
 
 ### Known Issues
 - None at this time

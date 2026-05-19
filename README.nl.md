@@ -8,7 +8,9 @@ Een Pebble smartwatch app die live treinreissinformatie van Nederlandse Spoorweg
 - Aftelklok tot je volgende trein
 - Spoorinformatie en vertragingen
 - Automatische stationsdetectie op basis van je locatie
+- Reisdetailscherm met informatie voor ritten met overstappen
 - Favoriete stations: sla tot 5 favoriete stations op voor snelle toegang bij het selecteren van je bestemming
+- Timeline pinning: zet een los reisonderdeel of je volledige reis op de Pebble Timeline
 - Geoptimaliseerde UI voor ronde schermen (Pebble Time Round)
 - Ondersteuning voor alle Pebble modellen (Aplite, Basalt, Chalk, Diorite, Emery, Flint)
 
@@ -44,7 +46,9 @@ Om deze app te gebruiken heb je nodig:
 2. De app detecteert automatisch de acht meest dichtstbijzijnde treinstations op basis van je locatie
 3. Selecteer je vertrek- en bestemmingsstations
 4. Bekijk aankomende treinen met vertrektijden, sporen en vertragingsinformatie
-5. Gebruik de aftelklok om precies te zien hoeveel tijd je hebt tot je volgende trein, misschien kan je nog snel ff langs de Smullers
+5. Druk op SELECT op het aftelklok om de reisdetails per onderdeel te bekijken
+6. Druk op SELECT op een reisonderdeel om het (of de hele reis) op de Pebble Timeline te zetten
+7. Gebruik de aftelklok om precies te zien hoeveel tijd je hebt tot je volgende trein, misschien kan je nog snel ff langs de Smullers
 
 ## Ontwikkeling
 

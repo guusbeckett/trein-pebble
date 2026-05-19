@@ -43,6 +43,8 @@ typedef struct {
   char arrival_station[MAX_LEG_STATION_LENGTH];
   char arrival_time[MAX_LEG_TIME_LENGTH];
   char duration[MAX_LEG_DURATION_LENGTH];
+  uint32_t dep_epoch;
+  uint32_t arr_epoch;
 } LegData;
 
 // Trip Legs Data (all legs for a trip)
@@ -59,6 +61,7 @@ typedef struct {
   Window *alpha_menu_window;
   Window *countdown_window;
   Window *journey_details_window;
+  Window *pin_menu_window;
 } AppWindows;
 
 // Menu Layer Components

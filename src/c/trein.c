@@ -38,9 +38,25 @@ static void prv_spinner_timer_callback(void *data);
 static void prv_trip_leg_layer_update_proc(Layer *layer, GContext *ctx);
 static void prv_journey_details_window_load(Window *window);
 static void prv_journey_details_window_unload(Window *window);
+static void prv_pin_menu_window_load(Window *window);
+static void prv_pin_menu_window_unload(Window *window);
 
 // --- Global Application Data ---
 static AppData s_app;
+
+// --- Pin Menu State ---
+static SimpleMenuSection s_pin_menu_sections[1];
+static SimpleMenuItem s_pin_menu_items[3];
+static SimpleMenuLayer *s_pin_simple_menu_layer;
+static int s_pin_selected_leg_index;
+
+// --- Pin Queue ---
+#define MAX_PIN_QUEUE 4
+typedef struct { int trip_index; int leg_index; bool is_last; } PinQueueItem;
+static PinQueueItem s_pin_queue[MAX_PIN_QUEUE];
+static int s_pin_queue_count = 0;
+static int s_pin_queue_sent = 0;
+static void prv_send_next_pin(void);
 #ifdef PBL_COLOR
 // This function will be used to draw the blue top bar
 static void prv_bg_blue_update_proc(Layer *layer, GContext *ctx) {
@@ -675,6 +691,7 @@ static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) 
   Tuple *favourite_code_tuple = dict_find(iter, MESSAGE_KEY_FAVOURITE_CODE);
   Tuple *favourite_name_tuple = dict_find(iter, MESSAGE_KEY_FAVOURITE_NAME);
   Tuple *favourite_count_tuple = dict_find(iter, MESSAGE_KEY_FAVOURITE_COUNT);
+  Tuple *pin_status_tuple = dict_find(iter, MESSAGE_KEY_PIN_STATUS);
   
   if (error_tuple) {
     text_layer_set_text(s_app.main_ui.text_layer, "Add API key in settings...");
@@ -790,6 +807,15 @@ static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) 
       strncpy(s_app.trip_legs[trip_idx].legs[leg_idx].duration, duration, MAX_LEG_DURATION_LENGTH - 1);
       s_app.trip_legs[trip_idx].legs[leg_idx].duration[MAX_LEG_DURATION_LENGTH - 1] = '\0';
 
+      Tuple *leg_dep_epoch_tuple = dict_find(iter, MESSAGE_KEY_LEG_DEPARTURE_EPOCH);
+      Tuple *leg_arr_epoch_tuple = dict_find(iter, MESSAGE_KEY_LEG_ARRIVAL_EPOCH);
+      if (leg_dep_epoch_tuple) {
+        s_app.trip_legs[trip_idx].legs[leg_idx].dep_epoch = (uint32_t)leg_dep_epoch_tuple->value->int32;
+      }
+      if (leg_arr_epoch_tuple) {
+        s_app.trip_legs[trip_idx].legs[leg_idx].arr_epoch = (uint32_t)leg_arr_epoch_tuple->value->int32;
+      }
+
       s_app.trip_legs[trip_idx].leg_count = leg_count;
     }
   }
@@ -819,11 +845,25 @@ static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) 
       }
     }
   }
+
+  if (pin_status_tuple) {
+    if (pin_status_tuple->value->int32 == 1) {
+      vibes_short_pulse();
+    } else {
+      vibes_long_pulse();
+    }
+  }
 }
 
 static void prv_inbox_dropped_handler(AppMessageResult reason, void *context) { APP_LOG(APP_LOG_LEVEL_ERROR, "Message dropped: %d", (int)reason); }
 static void prv_outbox_failed_handler(DictionaryIterator *iter, AppMessageResult reason, void *context) { APP_LOG(APP_LOG_LEVEL_ERROR, "Outbox send failed: %d", (int)reason); }
-static void prv_outbox_sent_handler(DictionaryIterator *iter, void *context) { APP_LOG(APP_LOG_LEVEL_INFO, "Outbox send success"); }
+static void prv_outbox_sent_handler(DictionaryIterator *iter, void *context) {
+  APP_LOG(APP_LOG_LEVEL_INFO, "Outbox send success");
+  s_pin_queue_sent++;
+  if (s_pin_queue_sent < s_pin_queue_count) {
+    prv_send_next_pin();
+  }
+}
 
 static void prv_request_stations_from_phone(void) {
   DictionaryIterator *iter;
@@ -1028,8 +1068,97 @@ static void prv_journey_details_draw_row_callback(GContext *ctx, const Layer *ce
                      GTextAlignmentLeft, NULL);
 }
 
-static void prv_journey_details_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {
+static void prv_send_pin_request(int trip_index, int leg_index, bool is_last) {
+  LegData *leg = &s_app.trip_legs[trip_index].legs[leg_index];
+  DictionaryIterator *iter;
+  if (app_message_outbox_begin(&iter) == APP_MSG_OK) {
+    int one = 1;
+    int is_last_int = is_last ? 1 : 0;
+    dict_write_int(iter, MESSAGE_KEY_REQUEST_PIN, &one, sizeof(int), true);
+    dict_write_int(iter, MESSAGE_KEY_PIN_TRIP_INDEX, &trip_index, sizeof(int), true);
+    dict_write_int(iter, MESSAGE_KEY_PIN_LEG_INDEX, &leg_index, sizeof(int), true);
+    dict_write_int(iter, MESSAGE_KEY_PIN_IS_LAST, &is_last_int, sizeof(int), true);
+    dict_write_uint32(iter, MESSAGE_KEY_PIN_DEP_EPOCH, leg->dep_epoch);
+    dict_write_uint32(iter, MESSAGE_KEY_PIN_ARR_EPOCH, leg->arr_epoch);
+    dict_write_cstring(iter, MESSAGE_KEY_PIN_DEP_STATION, leg->departure_station);
+    dict_write_cstring(iter, MESSAGE_KEY_PIN_ARR_STATION, leg->arrival_station);
+    dict_write_cstring(iter, MESSAGE_KEY_PIN_PLATFORM, leg->departure_platform);
+    app_message_outbox_send();
+  }
+}
+
+static void prv_send_next_pin(void) {
+  if (s_pin_queue_sent < s_pin_queue_count) {
+    PinQueueItem *item = &s_pin_queue[s_pin_queue_sent];
+    prv_send_pin_request(item->trip_index, item->leg_index, item->is_last);
+  }
+}
+
+static void prv_pin_leg_callback(int index, void *context) {
+  s_pin_queue_count = 1;
+  s_pin_queue_sent = 0;
+  s_pin_queue[0] = (PinQueueItem){
+    .trip_index = s_app.journey.selected_trip_index,
+    .leg_index = s_pin_selected_leg_index,
+    .is_last = true
+  };
+  prv_send_next_pin();
+}
+
+static void prv_pin_journey_callback(int index, void *context) {
+  int trip_idx = s_app.journey.selected_trip_index;
+  int leg_count = s_app.trip_legs[trip_idx].leg_count;
+  s_pin_queue_count = leg_count;
+  s_pin_queue_sent = 0;
+  for (int i = 0; i < leg_count; i++) {
+    s_pin_queue[i] = (PinQueueItem){
+      .trip_index = trip_idx,
+      .leg_index = i,
+      .is_last = (i == leg_count - 1)
+    };
+  }
+  prv_send_next_pin();
+}
+
+static void prv_pin_exit_callback(int index, void *context) {
   window_stack_pop_all(true);
+}
+
+static void prv_pin_menu_window_load(Window *window) {
+  Layer *window_layer = window_get_root_layer(window);
+  GRect bounds = layer_get_bounds(window_layer);
+
+  s_pin_menu_items[0] = (SimpleMenuItem) { .title = "Pin this leg", .callback = prv_pin_leg_callback };
+  s_pin_menu_items[1] = (SimpleMenuItem) { .title = "Pin journey", .callback = prv_pin_journey_callback };
+  s_pin_menu_items[2] = (SimpleMenuItem) { .title = "Exit app", .callback = prv_pin_exit_callback };
+  s_pin_menu_sections[0] = (SimpleMenuSection) { .num_items = 3, .items = s_pin_menu_items };
+
+  s_pin_simple_menu_layer = simple_menu_layer_create(bounds, window, s_pin_menu_sections, 1, NULL);
+
+  #ifdef PBL_COLOR
+  MenuLayer *pin_ml = simple_menu_layer_get_menu_layer(s_pin_simple_menu_layer);
+  menu_layer_set_normal_colors(pin_ml, GColorYellow, GColorBlack);
+  menu_layer_set_highlight_colors(pin_ml, GColorOxfordBlue, GColorWhite);
+  #endif
+
+  layer_add_child(window_layer, simple_menu_layer_get_layer(s_pin_simple_menu_layer));
+}
+
+static void prv_pin_menu_window_unload(Window *window) {
+  simple_menu_layer_destroy(s_pin_simple_menu_layer);
+  s_pin_simple_menu_layer = NULL;
+  window_destroy(s_app.windows.pin_menu_window);
+  s_app.windows.pin_menu_window = NULL;
+}
+
+static void prv_journey_details_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {
+  s_pin_selected_leg_index = cell_index->row;
+  s_app.windows.pin_menu_window = window_create();
+  window_set_window_handlers(s_app.windows.pin_menu_window, (WindowHandlers){
+    .load = prv_pin_menu_window_load,
+    .unload = prv_pin_menu_window_unload,
+  });
+  window_stack_push(s_app.windows.pin_menu_window, true);
 }
 
 static void prv_journey_details_window_load(Window *window) {
