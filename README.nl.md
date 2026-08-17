@@ -1,10 +1,11 @@
 # Trein
 
-Een Pebble smartwatch app die live treinreissinformatie van Nederlandse Spoorwegen toont, inclusief een aftelklok tot je volgende trein vertrekt, vertrektijden en spoorinformatie.
+Een Pebble smartwatch app die live treininformatie voor het Nederlandse en Belgische spoorwegnet toont, inclusief een aftelklok, vertrektijden en spoorinformatie.
 
 ## Functionaliteiten
 
 - Realtime treinvertrektijden
+- Selecteerbare databronnen voor NS (Nederland) en iRail/NMBS/SNCB (België)
 - Aftelklok tot je volgende trein
 - Spoorinformatie en vertragingen
 - Automatische stationsdetectie op basis van je locatie
@@ -20,16 +21,18 @@ Om deze app te gebruiken heb je nodig:
 
 1. Een Pebble smartwatch
 2. De Pebble app geïnstalleerd op je smartphone
-3. **Een NS API key** van het [NS API Portaal](https://apiportal.ns.nl/)
+3. Voor Nederland: **een NS API key** van het [NS API Portaal](https://apiportal.ns.nl/). Voor iRail is geen API key nodig.
 
 ## Installatie
 
 1. Installeer de app op je Pebble horloge via de Pebble app store of door sideloaden
-2. **Configureer je NS API key** (vereist voor de werking van de app):
+2. Configureer het spoorwegnet:
    - Open de Pebble app op je telefoon
    - Navigeer naar Settings → My Pebble Apps → Trein
    - Tik op "Settings"
-   - Voer je NS API key in op de configuratiepagina
+   - Selecteer de Nederlandse of Belgische databron
+   - Voer bij gebruik van NS je API key in
+   - Voeg favoriete bestemmingen toe (Belgische bestemmingen kies je op het horloge uit je favorieten)
    - Sla de instellingen op
 
 ### Bemachtig een NS API Key
@@ -91,12 +94,13 @@ Bijdragen zijn welkom! Voel je vrij om issues of pull requests in te dienen.
 
 - Eric Migicovsky voor het terugbrengen van Pebble
 - Nederlandse Spoorwegen (NS) voor het aanbieden van de API
+- [iRail](https://irail.be/) voor het aanbieden van open Belgische spoorwegdata
 - De Pebble gemeenschap
 
 ## Ondersteuning
 
 Als je problemen tegenkomt of vragen hebt:
-- Controleer of je NS API key correct is geconfigureerd in de app instellingen
+- Controleer of de juiste databron is geselecteerd en, voor NS, of de API key is geconfigureerd
 - Zorg ervoor dat je telefoon locatiediensten heeft ingeschakeld
 - Verifieer dat je een actieve internetverbinding hebt
 

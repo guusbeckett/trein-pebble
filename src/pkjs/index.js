@@ -14,10 +14,10 @@
 // * You should have received a copy of the GNU General Public License 
 // * along with this program. If not, see <http://www.gnu.org/licenses/>.
 //
+var DataSources = require("./data_sources");
+var ConfigPage = require("./config_page");
 var DEFAULT_API_KEY = "";
-var BASE_API_URL = "https://gateway.apiportal.ns.nl";
-var NEAREST_STATIONS_PATH = "/nsapp-stations/v2/nearest";
-var TRIP_PATH = "/reisinformatie-api/api/v3/trips";
+var DEFAULT_DATA_SOURCE = "ns";
 
 function getApiKey() {
   try {
@@ -29,6 +29,22 @@ function getApiKey() {
     console.log("Error reading from localStorage: " + e);
   }
   return DEFAULT_API_KEY;
+}
+
+function getDataSourceId() {
+  try {
+    var id = localStorage.getItem("data_source");
+    if (DataSources.ids.indexOf(id) !== -1) {
+      return id;
+    }
+  } catch (e) {
+    console.log("Error reading data source from localStorage: " + e);
+  }
+  return DEFAULT_DATA_SOURCE;
+}
+
+function getDataSource() {
+  return DataSources.create(getDataSourceId(), getApiKey);
 }
 
 function getFavourites() {
@@ -46,6 +62,10 @@ function getFavourites() {
 function sendFavouritesToWatch() {
   var favourites = getFavourites();
   if (favourites.length === 0) {
+    Pebble.sendAppMessage({
+      "DATA_SOURCE": getDataSourceId() === "irail" ? 1 : 0,
+      "FAVOURITE_COUNT": 0
+    });
     return;
   }
 
@@ -60,6 +80,7 @@ function sendFavouritesToWatch() {
     var currentIndex = sendIndex;
 
     Pebble.sendAppMessage({
+      "DATA_SOURCE": getDataSourceId() === "irail" ? 1 : 0,
       "FAVOURITE_INDEX": currentIndex,
       "FAVOURITE_CODE": fav.code,
       "FAVOURITE_NAME": fav.name,
@@ -79,11 +100,12 @@ function sendFavouritesToWatch() {
 }
 
 Pebble.addEventListener("showConfiguration", function(e) {
-  var url = "https://guusbeckett.github.io/config.html";
-  var currentKey = getApiKey();
-  var favourites = getFavourites();
-
-  Pebble.openURL(url + "?api_key=" + encodeURIComponent(currentKey) + "&favourites=" + encodeURIComponent(JSON.stringify(favourites)));
+  var html = ConfigPage.render({
+    api_key: getApiKey(),
+    data_source: getDataSourceId(),
+    favourites: getFavourites()
+  });
+  Pebble.openURL("data:text/html;charset=utf-8," + encodeURIComponent(html));
 });
 
 Pebble.addEventListener("webviewclosed", function(e) {
@@ -94,14 +116,19 @@ Pebble.addEventListener("webviewclosed", function(e) {
   var settings;
   try {
     settings = JSON.parse(decodeURIComponent(e.response));
-    if (settings.api_key) {
-      localStorage.setItem("api_key", settings.api_key);
+    if (Object.prototype.hasOwnProperty.call(settings, "api_key")) {
+      localStorage.setItem("api_key", settings.api_key || "");
       console.log("Saved new API key.");
     }
-    if (settings.favourites) {
+    if (DataSources.ids.indexOf(settings.data_source) !== -1) {
+      localStorage.setItem("data_source", settings.data_source);
+      console.log("Saved data source: " + settings.data_source);
+    }
+    if (settings.favourites instanceof Array) {
       localStorage.setItem("favourites", JSON.stringify(settings.favourites));
       console.log("Saved favourites: " + settings.favourites.length);
       sendFavouritesToWatch();
+      requestLocationAndFetchStations();
     }
   } catch (err) {
     console.log("Error parsing settings: " + err);
@@ -187,21 +214,13 @@ function convertIsoDateToEpoch(apiDateString) {
   return Math.round(dateObject.getTime() / 1000);
 }
 
-function processStationData(data) {
-  if (!data.payload || data.payload.length === 0) {
+function processStationData(nearbyStations) {
+  if (!nearbyStations || nearbyStations.length === 0) {
     console.log("No stations found");
     Pebble.sendAppMessage({
       "ERROR": 1
     });
     return;
-  }
-
-  var nearbyStations = [];
-  for (var j = 0; j < data.payload.length && nearbyStations.length < 8; j++) {
-    nearbyStations.push({
-      code: data.payload[j].code,
-      name: data.payload[j].namen.middel
-    });
   }
 
   console.log("Processing " + nearbyStations.length + " nearby stations");
@@ -234,47 +253,6 @@ function processStationData(data) {
   }
 
   sendNextStation();
-}
-
-function sendRequest(url, sendToWatchFunction){
-  var xhr = new XMLHttpRequest();
-  xhr.timeout = 2000;
-
-  xhr.open("GET", url, true); // The "true" argument makes it asynchronous.
-  
-  xhr.setRequestHeader("Cache-Control", "no-cache");
-  xhr.setRequestHeader("Ocp-Apim-Subscription-Key", getApiKey());
-  
-  xhr.onload = function() {
-    if (xhr.status >= 200 && xhr.status < 300) {
-      var data;
-      try {
-        data = JSON.parse(xhr.responseText);
-      } catch (e) {
-        console.log("Error parsing JSON response: " + e);
-        Pebble.sendAppMessage({
-          "ERROR": 1
-        });
-        return;
-      }
-      
-      sendToWatchFunction(data);
-    } else {
-      console.log("Did not receive OK. Status: " + xhr.status);
-      Pebble.sendAppMessage({
-        "ERROR": 1
-      });
-    }
-  };
-
-  xhr.onerror = function() {
-    console.log("Fetch error: A network error occurred.");
-    Pebble.sendAppMessage({
-      "ERROR": 1
-    });
-  };
-  
-  xhr.send();
 }
 
 function abbreviateStation(name) {
@@ -472,7 +450,7 @@ function processTripData(data) {
     }
 
     if (actualDepartureTime == undefined){
-      console.log('Actual departure time is undefined, value gotten from NS API is:');
+      console.log('Actual departure time is undefined; provider value is:');
       console.log(trips[sendIndex].legs[0].origin.actualDepartureTime);
     }
 
@@ -508,12 +486,23 @@ function processTripData(data) {
 }
 
 function fetchNearbyStations(lat, lng) {
-  var url = BASE_API_URL + NEAREST_STATIONS_PATH + "?lat=" + lat + "&lng=" + lng + "&limit=8&includeNonPlannableStations=false";
-  sendRequest(url, processStationData);
+  getDataSource().nearbyStations(lat, lng, function(error, stations) {
+    if (error) {
+      console.log("Could not load nearby stations: " + error.message);
+      Pebble.sendAppMessage({"ERROR": 1});
+      return;
+    }
+    processStationData(stations);
+  });
 }
 
 function requestTrips(start, destination) {
-  const date_now = new Date();
-  var url = BASE_API_URL + TRIP_PATH + "?fromStation=" + start + "&toStation=" + destination + "&dateTime=" + date_now.toISOString();
-  sendRequest(url, processTripData);
+  getDataSource().trips(start, destination, function(error, trips) {
+    if (error) {
+      console.log("Could not load trips: " + error.message);
+      Pebble.sendAppMessage({"ERROR": 1});
+      return;
+    }
+    processTripData({trips: trips});
+  });
 }

@@ -1,10 +1,11 @@
 # Trein
 
-A Pebble smartwatch app that shows live train information from Nederlandse Spoorwegen (Dutch Railways), including countdowns to your next train, departure times, and platform information.
+A Pebble smartwatch app that shows live train information for the Dutch and Belgian railway networks, including countdowns to your next train, departure times, and platform information.
 
 ## Features
 
 - Real-time train departure information
+- Selectable NS (Netherlands) and iRail/NMBS/SNCB (Belgium) data sources
 - Countdown timer to your next train
 - Platform information and delays
 - Automatic station detection based on your location
@@ -20,16 +21,18 @@ To use this app, you need:
 
 1. A Pebble smartwatch
 2. The Pebble app installed on your smartphone
-3. **An NS API key** from the [NS API Portal](https://apiportal.ns.nl/)
+3. For the Dutch network, **an NS API key** from the [NS API Portal](https://apiportal.ns.nl/). The Belgian iRail API does not require a key.
 
 ## Installation
 
 1. Install the app on your Pebble watch through the Pebble app store or by sideloading
-2. **Configure your NS API key** (required for the app to work):
+2. Configure the railway network:
    - Open the Pebble app on your phone
    - Navigate to Settings → My Pebble Apps → Trein
    - Tap on "Settings"
-   - Enter your NS API key in the configuration page
+   - Select the Dutch or Belgian data source
+   - Enter your NS API key when using the Dutch network
+   - Add favourite destinations (Belgian destinations are selected from favourites on the watch)
    - Save the settings
 
 ### Getting an NS API Key
@@ -96,12 +99,13 @@ Contributions are welcome! Please feel free to submit issues or pull requests.
 
 - Eric Migicovsky for bringing back Pebble
 - Nederlandse Spoorwegen (NS) for providing the API
+- [iRail](https://irail.be/) for providing open Belgian railway data
 - The Pebble developer community
 
 ## Support
 
 If you encounter any issues or have questions:
-- Check that your NS API key is correctly configured in the app settings
+- Check that the correct data source is selected and, for NS, that the API key is configured
 - Ensure your phone has location services enabled
 - Verify that you have an active internet connection
 
