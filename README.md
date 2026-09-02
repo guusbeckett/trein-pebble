@@ -59,14 +59,14 @@ To use this app, you need:
 
 ### Getting an OpenRouteService API Key (Optional)
 
-The OVER/VERTREK routing features require an OpenRouteService API key for real walking/cycling directions to your departure station. Without this key, OVER stays "..." and VERTREK still works from NS. Directions are requested from api.heigit.org (same ORS key).
+The OVER/VERTREK routing features require an OpenRouteService API key for real walking/cycling directions to your departure station. Without this key, OVER falls back to the departure countdown and VERTREK still works from NS. Directions are requested from api.heigit.org (same ORS key).
 
 1. Visit [OpenRouteService](https://openrouteservice.org/dev/#/signup)
 2. Create a free account
 3. Request a free API token (Standard plan: 2000 requests/day)
 4. Copy the API key and paste it in the app settings under "Routing API Key"
 
-**Important**: This fork uses ONLY real routed walking/cycling directions via OpenRouteService (api.heigit.org/openrouteservice). No haversine-as-duration fallback. The free tier is sufficient for personal use with the 30-second refresh cycle.
+**Important**: This fork uses ONLY real routed walking/cycling directions via OpenRouteService (api.heigit.org/openrouteservice). No haversine-as-duration fallback; if ORS is missing the OVER clock still counts down to departure. The free tier is sufficient for personal use with the 30-second refresh cycle.
 
 ## Usage
 

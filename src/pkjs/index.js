@@ -88,11 +88,50 @@ function getOrsKey() {
 function offsetForCode(code) {
   var map = {};
   try { map = JSON.parse(lsGet("station_offsets", "{}")); } catch (e) {}
-  if (!code) return 0;
-  if (map[code] != null) return parseInt(map[code], 10) || 0;
+  if (!code) return 2;
+  if (map[code] != null && map[code] !== "") {
+    var n = parseInt(map[code], 10);
+    if (!isNaN(n)) return n;
+  }
   var up = String(code).toUpperCase();
-  for (var k in map) { if (k.toUpperCase() === up) return parseInt(map[k], 10) || 0; }
-  return 0;
+  for (var k in map) {
+    if (k.toUpperCase() === up) {
+      var m = parseInt(map[k], 10);
+      if (!isNaN(m)) return m;
+    }
+  }
+  return 2;
+}
+function setOffsetForCode(code, minutes) {
+  if (!code) return 2;
+  var map = {};
+  try { map = JSON.parse(lsGet("station_offsets", "{}")); } catch (e) {}
+  if (!map || typeof map !== "object") map = {};
+  var n = parseInt(minutes, 10);
+  if (isNaN(n)) n = 2;
+  if (n < -15) n = -15;
+  if (n > 30) n = 30;
+  map[code] = n;
+  lsSet("station_offsets", JSON.stringify(map));
+  return n;
+}
+function addFavouriteFromWatch(code, name) {
+  if (!code) return;
+  var favourites = getFavourites();
+  var up = String(code).toUpperCase();
+  for (var i = 0; i < favourites.length; i++) {
+    if (favourites[i] && String(favourites[i].code).toUpperCase() === up) {
+      sendFavouritesToWatch();
+      return;
+    }
+  }
+  if (favourites.length >= 5) {
+    sendFavouritesToWatch();
+    return;
+  }
+  favourites.push({ code: code, name: name || code });
+  try { localStorage.setItem("favourites", JSON.stringify(favourites)); } catch (e) {}
+  sendFavouritesToWatch();
 }
 var lastStartCode = "", lastDestCode = "", stationCoords = {}, lastRouted = null, cachedDurationMin = null, orsInFlight = false, tripsSentOnce = false, routeTickMissedDest = false;
 function haversineMeters(a, b, c, d) {
@@ -291,15 +330,37 @@ Pebble.addEventListener("appmessage", function(e) {
     pinToTimeline(e.payload);
   }
 
+  if (e.payload.REQUEST_FAVOURITE && e.payload.FAVOURITE_CODE) {
+    addFavouriteFromWatch(e.payload.FAVOURITE_CODE, e.payload.FAVOURITE_NAME);
+  }
+  if (e.payload.STATION_OFFSET != null && e.payload.START_STATION_CODE && !e.payload.DEST_STATION_CODE) {
+    var stored = setOffsetForCode(e.payload.START_STATION_CODE, e.payload.STATION_OFFSET);
+    Pebble.sendAppMessage({ "STATION_OFFSET": stored }, function() {}, function() {});
+  }
+  if (e.payload.SETTINGS_TIJD_MODE != null) lsSet("settings_tijd_mode", String(e.payload.SETTINGS_TIJD_MODE));
+  if (e.payload.SETTINGS_REISTIJD != null) lsSet("settings_reistijd", String(e.payload.SETTINGS_REISTIJD));
+  if (e.payload.SETTINGS_VERVOER != null) {
+    lsSet("settings_vervoer", String(e.payload.SETTINGS_VERVOER));
+    lastRouted = null;
+    cachedDurationMin = null;
+  }
   if (e.payload.REQUEST_ROUTE) {
     var vervoer = e.payload.ROUTE_MODE;
     if (vervoer == null) vervoer = parseInt(lsGet("settings_vervoer", "0"), 10);
     else lsSet("settings_vervoer", String(vervoer));
-    handleRouteTick(vervoer);
+    var reistijd = e.payload.SETTINGS_REISTIJD;
+    if (reistijd == null) reistijd = parseInt(lsGet("settings_reistijd", "1"), 10);
+    if (parseInt(reistijd, 10) === 0) {
+      if (tripsSentOnce && lastStartCode && lastDestCode) requestTrips(lastStartCode, lastDestCode);
+      sendRouteToWatch(null, false);
+    } else {
+      handleRouteTick(vervoer);
+    }
+  } else if (e.payload.SETTINGS_VERVOER != null && parseInt(lsGet("settings_reistijd", "1"), 10) !== 0) {
+    lastRouted = null;
+    cachedDurationMin = null;
+    handleRouteTick(parseInt(e.payload.SETTINGS_VERVOER, 10));
   }
-  if (e.payload.SETTINGS_TIJD_MODE != null) lsSet("settings_tijd_mode", String(e.payload.SETTINGS_TIJD_MODE));
-  if (e.payload.SETTINGS_REISTIJD != null) lsSet("settings_reistijd", String(e.payload.SETTINGS_REISTIJD));
-  if (e.payload.SETTINGS_VERVOER != null) lsSet("settings_vervoer", String(e.payload.SETTINGS_VERVOER));
 });
 
 function requestLocationAndFetchStations() {  
@@ -661,14 +722,14 @@ function processTripData(data) {
     var plannedDepartureTime = trips[sendIndex].legs[0].origin.plannedDateTime;
     var actualArrivalTime = trips[sendIndex].legs[trips[sendIndex].transfers].destination.actualDateTime;
     var plannedArrivalTime = trips[sendIndex].legs[trips[sendIndex].transfers].destination.plannedDateTime;
+    var tripDelay = "On time";
     if (actualDepartureTime === undefined) {
       tripDelay = "Cancelled";
       actualDepartureTime = trips[sendIndex].legs[trips[sendIndex].transfers].destination.plannedDateTime;
     }
 
     var delay = (Date.parse(actualDepartureTime)-Date.parse(plannedDepartureTime))/60000;
-    var tripDelay = "On time";
-    if (delay > 0) {
+    if (delay > 0 && tripDelay !== "Cancelled") {
       tripDelay = "+" + delay;
     }
 
@@ -688,16 +749,22 @@ function processTripData(data) {
     var tripTransfers = trips[sendIndex].transfers;
     var currentIndex = sendIndex;
     var actualDepartureTimeEpoch = convertIsoDateToEpoch(actualDepartureTime);
+    var plannedDepartureTimeEpoch = convertIsoDateToEpoch(plannedDepartureTime);
     var actualArrivalTimeEpoch = convertIsoDateToEpoch(actualArrivalTime);
     if (!actualArrivalTimeEpoch) {
       actualArrivalTimeEpoch = convertIsoDateToEpoch(plannedArrivalTime);
     }
+    var originArrivalIso = origin0.actualArrivalDateTime || origin0.plannedArrivalDateTime || "";
+    var originArrivalEpoch = convertIsoDateToEpoch(originArrivalIso);
+    if (!originArrivalEpoch) originArrivalEpoch = plannedDepartureTimeEpoch;
     tripsSentOnce = true;
 
     Pebble.sendAppMessage({
       "TRIP_INDEX": currentIndex,
       "TRIP_PLANNED_DEPARTURE_TIME": asStr(plannedDepartureTime, ""),
+      "TRIP_PLANNED_DEPARTURE_TIME_EPOCH": plannedDepartureTimeEpoch,
       "TRIP_DEPARTURE_TIME_EPOCH": actualDepartureTimeEpoch,
+      "TRIP_ORIGIN_ARRIVAL_EPOCH": originArrivalEpoch,
       "TRIP_PLANNED_ARRIVAL_TIME": asStr(plannedArrivalTime, ""),
       "TRIP_ARRIVAL_TIME": asStr(actualArrivalTime, ""),
       "TRIP_ARRIVAL_TIME_EPOCH": actualArrivalTimeEpoch,
@@ -721,6 +788,13 @@ function processTripData(data) {
 }
 
 function fetchNearbyStations(lat, lng) {
+  if (typeof Pebble !== "undefined" && Pebble.platform === "pypkjs") {
+    processStationData({ payload: [
+      { code: "bd", namen: { middel: "Breda" }, lat: 51.5958, lng: 4.779 },
+      { code: "ehv", namen: { middel: "Eindhoven Centraal" }, lat: 51.443, lng: 5.481 }
+    ]});
+    return;
+  }
   if (!getApiKey()) {
     Pebble.sendAppMessage({ "ERROR": 1 });
     return;
@@ -729,10 +803,51 @@ function fetchNearbyStations(lat, lng) {
   sendRequest(url, processStationData, "stations");
 }
 
+
+function pad2(n) { return n < 10 ? "0" + n : String(n); }
+function toNsIso(ms) {
+  var d = new Date(ms + 2 * 3600000);
+  return d.getUTCFullYear() + "-" + pad2(d.getUTCMonth() + 1) + "-" + pad2(d.getUTCDate()) +
+    "T" + pad2(d.getUTCHours()) + ":" + pad2(d.getUTCMinutes()) + ":" + pad2(d.getUTCSeconds()) + "+0200";
+}
+function emulatorInjectDelayTrip(start, destination) {
+  if (typeof Pebble === "undefined" || Pebble.platform !== "pypkjs") return false;
+  var now = Date.now();
+  var plannedDep = now - 2 * 60000;
+  var actualDep = plannedDep + 8 * 60000;
+  var plannedArr = plannedDep + 81 * 60000;
+  var actualArr = actualDep + 81 * 60000;
+  processTripData({
+    trips: [{
+      transfers: 0,
+      status: "NORMAL",
+      legs: [{
+        origin: {
+          stationCode: start,
+          plannedDateTime: toNsIso(plannedDep),
+          actualDateTime: toNsIso(actualDep),
+          plannedArrivalDateTime: toNsIso(plannedDep - 3 * 60000),
+          actualArrivalDateTime: toNsIso(plannedDep - 3 * 60000),
+          plannedTrack: "3",
+          actualTrack: "3",
+          lat: 51.5606,
+          lng: 5.0796
+        },
+        destination: {
+          plannedDateTime: toNsIso(plannedArr),
+          actualDateTime: toNsIso(actualArr)
+        }
+      }]
+    }]
+  });
+  return true;
+}
+
 function requestTrips(start, destination) {
   lastStartCode = start;
   lastDestCode = destination;
   lookupStartCoords(start);
+  if (emulatorInjectDelayTrip(start, destination)) return;
   var date_now = new Date();
   var url = BASE_API_URL + TRIP_PATH + "?fromStation=" + start + "&toStation=" + destination + "&dateTime=" + date_now.toISOString();
   sendRequest(url, processTripData, "trips");

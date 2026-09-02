@@ -58,10 +58,8 @@ static SimpleMenuItem s_pin_menu_items[3];
 static SimpleMenuLayer *s_pin_simple_menu_layer;
 static int s_pin_selected_leg_index;
 
-static SimpleMenuSection s_settings_sections[1];
-static SimpleMenuItem s_settings_items[3];
-static SimpleMenuLayer *s_settings_menu_layer;
-static char s_settings_sub[3][20];
+static MenuLayer *s_settings_menu_layer;
+static char s_settings_sub[4][24];
 
 // --- Pin Queue ---
 #define MAX_PIN_QUEUE 4
@@ -300,7 +298,34 @@ static void prv_send_settings_to_phone(void) {
   dict_write_int32(iter, MESSAGE_KEY_SETTINGS_TIJD_MODE, (int32_t)s_app.settings.tijd_mode);
   dict_write_int32(iter, MESSAGE_KEY_SETTINGS_REISTIJD, s_app.settings.reistijd_enabled ? 1 : 0);
   dict_write_int32(iter, MESSAGE_KEY_SETTINGS_VERVOER, (int32_t)s_app.settings.vervoer_mode);
+  dict_write_uint8(iter, MESSAGE_KEY_REQUEST_ROUTE, 1);
+  dict_write_int32(iter, MESSAGE_KEY_ROUTE_MODE, (int32_t)s_app.settings.vervoer_mode);
   app_message_outbox_send();
+}
+
+static void prv_send_offset_to_phone(void) {
+  DictionaryIterator *iter;
+  if (app_message_outbox_begin(&iter) != APP_MSG_OK) return;
+  dict_write_cstring(iter, MESSAGE_KEY_START_STATION_CODE, s_app.journey.start_station_code);
+  dict_write_int32(iter, MESSAGE_KEY_STATION_OFFSET, s_app.routing.station_offset_min);
+  app_message_outbox_send();
+}
+
+static void prv_add_favourite(const char *code, const char *name) {
+  if (!code || !code[0]) return;
+  DictionaryIterator *iter;
+  if (app_message_outbox_begin(&iter) != APP_MSG_OK) return;
+  dict_write_uint8(iter, MESSAGE_KEY_REQUEST_FAVOURITE, 1);
+  dict_write_cstring(iter, MESSAGE_KEY_FAVOURITE_CODE, code);
+  dict_write_cstring(iter, MESSAGE_KEY_FAVOURITE_NAME, name ? name : code);
+  app_message_outbox_send();
+  vibes_short_pulse();
+}
+
+static int prv_clamp_offset(int v) {
+  if (v < -15) return -15;
+  if (v > 30) return 30;
+  return v;
 }
 
 static void prv_persist_settings(void) {
@@ -322,9 +347,9 @@ static bool prv_is_large_display(GRect bounds) {
   return false;
 #else
 #ifdef PBL_PLATFORM_FLINT
-  if (bounds.size.w >= 200 || bounds.size.h >= 200) return true;
-  /* Time 2 firmware is taller than basalt; this SDK still tags flint 144x168. */
-  return (bounds.size.h > 168 || bounds.size.w > 144);
+  (void)bounds;
+  /* Time 2 / flint: always large type, even when qemu reports 144x168. */
+  return true;
 #else
   return (bounds.size.w >= 200 || bounds.size.h >= 200);
 #endif
@@ -345,7 +370,6 @@ static bool prv_leco_safe(const char *s) {
 }
 
 static GFont prv_over_numeric_font(void) {
-  /* LECO glyphs paint outside a too-short frame and strike through VERTREK. */
   return fonts_get_system_font(prv_countdown_is_large() ? FONT_KEY_LECO_42_NUMBERS : FONT_KEY_LECO_20_BOLD_NUMBERS);
 }
 
@@ -353,14 +377,124 @@ static GFont prv_over_text_font(void) {
   return fonts_get_system_font(prv_countdown_is_large() ? FONT_KEY_GOTHIC_28_BOLD : FONT_KEY_GOTHIC_24_BOLD);
 }
 
-static void prv_set_over_text(const char *text) {
-  if (!s_app.countdown_ui.over_time_layer || !text) return;
+static void prv_set_clock_text(TextLayer *layer, const char *text) {
+  if (!layer || !text) return;
   if (prv_leco_safe(text)) {
-    text_layer_set_font(s_app.countdown_ui.over_time_layer, prv_over_numeric_font());
+    text_layer_set_font(layer, prv_over_numeric_font());
   } else {
-    text_layer_set_font(s_app.countdown_ui.over_time_layer, prv_over_text_font());
+    text_layer_set_font(layer, prv_over_text_font());
   }
-  text_layer_set_text(s_app.countdown_ui.over_time_layer, text);
+  text_layer_set_text(layer, text);
+}
+
+static void prv_set_over_text(const char *text) {
+  prv_set_clock_text(s_app.countdown_ui.over_time_layer, text);
+}
+
+static void prv_fmt_trip_duration(char *buf, size_t n, const char *dep_iso, const char *arr_iso) {
+  buf[0] = '\0';
+  if (!dep_iso || !arr_iso || dep_iso[0] == '\0' || arr_iso[0] == '\0') return;
+  if (strlen(dep_iso) < 16 || strlen(arr_iso) < 16) return;
+  int dh = prv_atoi(dep_iso + 11);
+  int dm = prv_atoi(dep_iso + 14);
+  int ah = prv_atoi(arr_iso + 11);
+  int am = prv_atoi(arr_iso + 14);
+  int mins = (ah * 60 + am) - (dh * 60 + dm);
+  if (mins < 0) mins += 24 * 60;
+  if (mins >= 60) snprintf(buf, n, "%du%02d", mins / 60, mins % 60);
+  else snprintf(buf, n, "%dm", mins);
+}
+
+static int prv_delay_minutes(int idx, time_t planned, time_t actual) {
+  if (actual && planned && actual > planned) {
+    return (int)((actual - planned + 30) / 60);
+  }
+  const char *d = s_app.trips.delay[idx];
+  if (d[0] == '+') return prv_atoi(d + 1);
+  return 0;
+}
+
+static void prv_place_delay_slot(bool show, bool large, TextLayer *clock) {
+  if (!s_app.countdown_ui.delay_layer || !s_app.windows.countdown_window) return;
+  Layer *root = window_get_root_layer(s_app.windows.countdown_window);
+  GRect bounds = layer_get_bounds(root);
+  Layer *dl = text_layer_get_layer(s_app.countdown_ui.delay_layer);
+  layer_set_hidden(dl, !show);
+  if (!clock) return;
+  GRect vtk = layer_get_frame(text_layer_get_layer(clock));
+  int delay_w = large ? 56 : 44;
+  int right = bounds.size.w - 2;
+  if (show) {
+    int cw = (right - delay_w - 2) - vtk.origin.x;
+    if (cw < 56) cw = 56;
+    vtk.size.w = cw;
+    layer_set_frame(text_layer_get_layer(clock), vtk);
+    GRect df = layer_get_frame(dl);
+    df.origin.x = vtk.origin.x + vtk.size.w;
+    df.origin.y = vtk.origin.y + (large ? 6 : 0);
+    df.size.w = delay_w;
+    df.size.h = vtk.size.h;
+    layer_set_frame(dl, df);
+  } else {
+    vtk.size.w = right - vtk.origin.x;
+    if (vtk.size.w < 56) vtk.size.w = 56;
+    layer_set_frame(text_layer_get_layer(clock), vtk);
+  }
+}
+
+static void prv_layout_countdown_clocks(bool hero) {
+  if (!s_app.windows.countdown_window || !s_app.countdown_ui.over_label_layer) return;
+  GRect bounds = layer_get_bounds(window_get_root_layer(s_app.windows.countdown_window));
+  const bool large = prv_is_large_display(bounds);
+  const int top_bar = large ? 30 : 28;
+  const int bot_bar = 24;
+  const int cream_top = top_bar;
+  const int cream_bottom = bounds.size.h - bot_bar;
+  const int x_pad = 4;
+  const int dur_h = 16;
+  if (hero) {
+    const int lab_h = large ? 28 : 22;
+    const int lab_y = cream_top + dur_h + 2;
+    int clock_y = lab_y + lab_h - 2;
+    int clock_h = cream_bottom - clock_y - 2;
+    if (clock_h < (large ? 44 : 28)) clock_h = large ? 44 : 28;
+    layer_set_frame(text_layer_get_layer(s_app.countdown_ui.over_label_layer),
+                    GRect(x_pad, lab_y, bounds.size.w - 62, lab_h));
+    text_layer_set_font(s_app.countdown_ui.over_label_layer,
+                        fonts_get_system_font(large ? FONT_KEY_GOTHIC_24_BOLD : FONT_KEY_GOTHIC_18_BOLD));
+    text_layer_set_text_alignment(s_app.countdown_ui.over_label_layer, GTextAlignmentLeft);
+    layer_set_frame(text_layer_get_layer(s_app.countdown_ui.over_time_layer),
+                    GRect(x_pad, clock_y, bounds.size.w - 8, clock_h));
+    layer_set_hidden(text_layer_get_layer(s_app.countdown_ui.vertrek_label_layer), true);
+    layer_set_hidden(text_layer_get_layer(s_app.countdown_ui.vertrek_time_layer), true);
+    if (s_app.countdown_ui.delay_layer) {
+      layer_set_frame(text_layer_get_layer(s_app.countdown_ui.delay_layer),
+                      GRect(bounds.size.w - 58, lab_y, 56, lab_h));
+    }
+  } else {
+    const int over_row_h = large ? 44 : 26;
+    const int over_y = cream_top + dur_h;
+    int vtk_row_h = large ? 42 : 24;
+    int vtk_y = over_y + over_row_h;
+    if (vtk_y + vtk_row_h > cream_bottom - 1) vtk_y = cream_bottom - 1 - vtk_row_h;
+    const int over_lab_w = 56;
+    const int vtk_lab_w = 56;
+    layer_set_frame(text_layer_get_layer(s_app.countdown_ui.over_label_layer),
+                    GRect(x_pad, over_y + (over_row_h - 16) / 2, over_lab_w, 16));
+    text_layer_set_font(s_app.countdown_ui.over_label_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD));
+    layer_set_frame(text_layer_get_layer(s_app.countdown_ui.over_time_layer),
+                    GRect(x_pad + over_lab_w, over_y, bounds.size.w - 6 - over_lab_w, over_row_h));
+    layer_set_hidden(text_layer_get_layer(s_app.countdown_ui.vertrek_label_layer), false);
+    layer_set_hidden(text_layer_get_layer(s_app.countdown_ui.vertrek_time_layer), false);
+    layer_set_frame(text_layer_get_layer(s_app.countdown_ui.vertrek_label_layer),
+                    GRect(x_pad, vtk_y + (vtk_row_h - 16) / 2, vtk_lab_w, 16));
+    layer_set_frame(text_layer_get_layer(s_app.countdown_ui.vertrek_time_layer),
+                    GRect(x_pad + vtk_lab_w, vtk_y, bounds.size.w - 60 - vtk_lab_w, vtk_row_h));
+    if (s_app.countdown_ui.delay_layer) {
+      layer_set_frame(text_layer_get_layer(s_app.countdown_ui.delay_layer),
+                      GRect(bounds.size.w - 56, vtk_y + (large ? 6 : 0), 54, vtk_row_h));
+    }
+  }
 }
 
 static void prv_countdown_timer_callback(void *data) {
@@ -374,31 +508,38 @@ static void prv_countdown_timer_callback(void *data) {
       !s_app.countdown_ui.vertrek_time_layer || !s_app.countdown_ui.vertrek_label_layer) {
     return;
   }
-  int dep_remain = (int)(s_app.state.departure_time - now);
+  time_t actual_dep = s_app.state.departure_time;
+  time_t planned_dep = (time_t)s_app.trips.planned_departures_epoch[idx];
+  if (planned_dep == 0) planned_dep = actual_dep;
+  int actual_remain = (int)(actual_dep - now);
+  int planned_remain = (int)(planned_dep - now);
+  if (planned_remain < 0) planned_remain = 0;
   bool cancelled = (strncmp(s_app.trips.delay[idx], "Cancelled", 9) == 0);
-  bool hero_vertrek = s_app.routing.at_station ||
-      (!s_app.settings.reistijd_enabled && s_app.settings.tijd_mode != TIJD_MODE_AANKOMST);
+  int delay_min = cancelled ? 0 : prv_delay_minutes(idx, planned_dep, actual_dep);
+  bool ors_on = s_app.settings.reistijd_enabled;
+  bool hero = !ors_on || s_app.routing.at_station;
+  bool aankomst = (s_app.settings.tijd_mode == TIJD_MODE_AANKOMST);
   int slack = (s_app.routing.travel_duration_min + s_app.routing.station_offset_min) * 60;
+  bool over_uses_slack = ors_on && !s_app.routing.at_station && s_app.routing.have_duration;
   int over_remain;
-  bool over_uses_slack = s_app.settings.reistijd_enabled && !s_app.routing.at_station;
-
-  if (over_uses_slack) {
-    over_remain = dep_remain - slack;
-  } else if (s_app.settings.tijd_mode == TIJD_MODE_AANKOMST) {
-    time_t arr = (time_t)s_app.trips.arrivals_epoch[idx];
-    over_remain = arr ? (int)(arr - now) : 0;
+  if (hero && aankomst) {
+    time_t oa = (time_t)s_app.trips.origin_arrivals_epoch[idx];
+    if (!oa) oa = planned_dep;
+    over_remain = (int)(oa - now);
+  } else if (over_uses_slack) {
+    over_remain = actual_remain - slack;
   } else {
-    over_remain = dep_remain;
+    over_remain = actual_remain;
   }
+  prv_layout_countdown_clocks(hero);
 
 #ifdef PBL_COLOR
   GColor band = GColorYellow;
   if (cancelled) {
     band = GColorRed;
-  } else if (hero_vertrek) {
+  } else if (hero) {
     band = GColorWhite;
-  } else if ((over_uses_slack && s_app.routing.have_duration) ||
-             (!over_uses_slack && s_app.settings.tijd_mode == TIJD_MODE_AANKOMST)) {
+  } else if (over_uses_slack) {
     if (over_remain < 0) band = GColorRed;
     else if (over_remain <= 120) band = GColorYellow;
     else band = GColorGreen;
@@ -413,7 +554,10 @@ static void prv_countdown_timer_callback(void *data) {
   if (s_app.countdown_ui.over_label_layer) {
     text_layer_set_text_color(s_app.countdown_ui.over_label_layer, band_fg);
   }
-  if (!hero_vertrek) {
+  if (s_app.countdown_ui.duration_layer) {
+    text_layer_set_text_color(s_app.countdown_ui.duration_layer, band_fg);
+  }
+  if (!hero) {
     if (s_app.countdown_ui.vertrek_time_layer) {
       text_layer_set_text_color(s_app.countdown_ui.vertrek_time_layer, band_fg);
     }
@@ -422,20 +566,18 @@ static void prv_countdown_timer_callback(void *data) {
     }
   }
   if (s_app.countdown_ui.delay_layer) {
-    text_layer_set_text_color(s_app.countdown_ui.delay_layer, band_fg);
+    text_layer_set_text_color(s_app.countdown_ui.delay_layer,
+        gcolor_equal(band, GColorRed) ? GColorWhite : GColorRed);
   }
 #endif
 
-  layer_set_hidden(text_layer_get_layer(s_app.countdown_ui.vertrek_label_layer), hero_vertrek);
-  layer_set_hidden(text_layer_get_layer(s_app.countdown_ui.vertrek_time_layer), hero_vertrek);
+  layer_set_hidden(text_layer_get_layer(s_app.countdown_ui.vertrek_label_layer), hero);
+  layer_set_hidden(text_layer_get_layer(s_app.countdown_ui.vertrek_time_layer), hero);
   layer_set_hidden(text_layer_get_layer(s_app.countdown_ui.over_label_layer), false);
   layer_set_hidden(text_layer_get_layer(s_app.countdown_ui.over_time_layer), false);
-  if (s_app.countdown_ui.delay_layer) {
-    layer_set_hidden(text_layer_get_layer(s_app.countdown_ui.delay_layer), cancelled);
-  }
 
-  if (hero_vertrek) {
-    text_layer_set_text(s_app.countdown_ui.over_label_layer, "VERTREK");
+  if (hero) {
+    text_layer_set_text(s_app.countdown_ui.over_label_layer, aankomst ? "AANKOMST" : "VERTREK");
   } else {
     text_layer_set_text(s_app.countdown_ui.over_label_layer, "OVER");
     text_layer_set_text(s_app.countdown_ui.vertrek_label_layer, "VERTREK");
@@ -443,39 +585,46 @@ static void prv_countdown_timer_callback(void *data) {
 
   if (cancelled) {
     prv_set_over_text("GEANNULEERD");
-  } else if (hero_vertrek) {
+  } else if (hero) {
     /* filled after VERTREK remainder */
-  } else if (over_uses_slack && !s_app.routing.have_duration) {
-    if (s_app.routing.route_error == 1) {
-      prv_set_over_text("geen route");
-    } else if (s_app.routing.route_error == 2) {
-      prv_set_over_text("ORS?");
-    } else {
-      prv_set_over_text("...");
-    }
   } else {
     prv_fmt_remain(s_app.buffers.over_buffer, sizeof(s_app.buffers.over_buffer), over_remain, true);
     prv_set_over_text(s_app.buffers.over_buffer);
   }
 
+  bool actual_passed = (actual_dep && actual_remain <= 0);
   if (cancelled) {
     snprintf(s_app.buffers.vertrek_buffer, sizeof(s_app.buffers.vertrek_buffer), "--:--");
-  } else if (dep_remain > 0) {
-    prv_fmt_remain(s_app.buffers.vertrek_buffer, sizeof(s_app.buffers.vertrek_buffer), dep_remain, false);
-  } else {
+  } else if (actual_passed) {
     snprintf(s_app.buffers.vertrek_buffer, sizeof(s_app.buffers.vertrek_buffer), "Departed");
-    time_t idle_since = s_app.state.last_button_time > s_app.state.departure_time
-        ? s_app.state.last_button_time : s_app.state.departure_time;
-    if (s_app.state.departure_time && (now - idle_since) >= 180) {
+    time_t idle_since = s_app.state.last_button_time > actual_dep
+        ? s_app.state.last_button_time : actual_dep;
+    if ((now - idle_since) >= 180) {
       window_stack_pop_all(true);
       return;
     }
+  } else {
+    prv_fmt_remain(s_app.buffers.vertrek_buffer, sizeof(s_app.buffers.vertrek_buffer), planned_remain, false);
   }
-  if (hero_vertrek && !cancelled) {
+  if (hero && !aankomst && !cancelled) {
     prv_set_over_text(s_app.buffers.vertrek_buffer);
-  } else if (!hero_vertrek) {
-    text_layer_set_text(s_app.countdown_ui.vertrek_time_layer, s_app.buffers.vertrek_buffer);
+  } else if (!hero) {
+    prv_set_clock_text(s_app.countdown_ui.vertrek_time_layer, s_app.buffers.vertrek_buffer);
   }
+
+  bool show_delay = false;
+  if (!cancelled && delay_min > 0 && !actual_passed) {
+    show_delay = true;
+    if (planned_dep > now) {
+      snprintf(s_app.buffers.delay_buffer, sizeof(s_app.buffers.delay_buffer), "+%d", delay_min);
+    } else {
+      int delay_remain = actual_remain > 0 ? actual_remain : 0;
+      prv_fmt_remain(s_app.buffers.delay_buffer, sizeof(s_app.buffers.delay_buffer), delay_remain, false);
+    }
+    text_layer_set_text(s_app.countdown_ui.delay_layer, s_app.buffers.delay_buffer);
+  }
+  prv_place_delay_slot(show_delay, prv_countdown_is_large(),
+      hero ? s_app.countdown_ui.over_time_layer : s_app.countdown_ui.vertrek_time_layer);
 
   s_app.state.countdown_timer = app_timer_register(1000, prv_countdown_timer_callback, NULL);
 }
@@ -495,17 +644,6 @@ static void prv_parse_time_and_start_timer() {
   prv_countdown_timer_callback(NULL);
 }
 
-static void prv_clock_timer_callback(void *data) {
-  time_t now = time(NULL);
-  struct tm *current_time = localtime(&now);
-
-  strftime(s_app.buffers.clock_buffer, sizeof(s_app.buffers.clock_buffer), "%H:%M", current_time);
-  text_layer_set_text(s_app.countdown_ui.clock_layer, s_app.buffers.clock_buffer);
-
-  // Calculate milliseconds until next minute
-  int seconds_until_next_minute = 60 - current_time->tm_sec;
-  s_app.state.clock_timer = app_timer_register(seconds_until_next_minute * 1000, prv_clock_timer_callback, NULL);
-}
 
 static void prv_trip_leg_layer_update_proc(Layer *layer, GContext *ctx) {
   int transfers = 0;
@@ -596,9 +734,12 @@ static void prv_trip_leg_layer_update_proc(Layer *layer, GContext *ctx) {
 static void prv_update_countdown_display() {
   text_layer_set_text(s_app.countdown_ui.platform_number_layer, s_app.trips.platform[s_app.journey.selected_trip_index]);
 
-  // Always show the delay text (including "Cancelled" if applicable)
-  snprintf(s_app.buffers.delay_buffer, sizeof(s_app.buffers.delay_buffer), "%s", s_app.trips.delay[s_app.journey.selected_trip_index]);
-  text_layer_set_text(s_app.countdown_ui.delay_layer, s_app.buffers.delay_buffer);
+  if (s_app.countdown_ui.duration_layer) {
+    prv_fmt_trip_duration(s_app.buffers.duration_buffer, sizeof(s_app.buffers.duration_buffer),
+                          s_app.trips.planned_departures[s_app.journey.selected_trip_index],
+                          s_app.trips.planned_arrivals[s_app.journey.selected_trip_index]);
+    text_layer_set_text(s_app.countdown_ui.duration_layer, s_app.buffers.duration_buffer);
+  }
 
   if (s_app.trips.planned_departures[s_app.journey.selected_trip_index][0] != '\0') {
     strncpy(s_app.buffers.departure_time_buffer, &s_app.trips.planned_departures[s_app.journey.selected_trip_index][11], 5);
@@ -752,6 +893,12 @@ static void prv_menu_draw_row_callback(GContext *ctx, const Layer *cell_layer, M
   }
 }
 
+static void prv_menu_select_long_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {
+  int row = cell_index->row;
+  if (!s_app.stations.loaded || row < 0 || row >= s_app.stations.count) return;
+  prv_add_favourite(s_app.stations.codes[row], s_app.stations.names[row]);
+}
+
 static void prv_menu_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {
   int row = cell_index->row;
 
@@ -775,6 +922,7 @@ static void prv_menu_window_load(Window *window) {
     .draw_header = prv_menu_draw_header_callback,
     .draw_row = prv_menu_draw_row_callback,
     .select_click = prv_menu_select_callback,
+    .select_long_click = prv_menu_select_long_callback,
   });
   #ifdef PBL_COLOR
   menu_layer_set_normal_colors(s_app.menu_layers.menu_layer, GColorYellow, GColorBlack);
@@ -797,6 +945,12 @@ static void prv_alpha_menu_draw_row_callback(GContext *ctx, const Layer *cell_la
   menu_cell_basic_draw(ctx, cell_layer, station->name, NULL, NULL);
 }
 
+static void prv_alpha_menu_select_long_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {
+  int station_index = alphabet_index[s_app.state.selected_alphabet_index].start_index + cell_index->row;
+  const Station *station = &all_stations[station_index];
+  prv_add_favourite(station->code, station->name);
+}
+
 static void prv_alpha_menu_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {
   int station_index = alphabet_index[s_app.state.selected_alphabet_index].start_index + cell_index->row;
   const Station *station = &all_stations[station_index];
@@ -812,6 +966,7 @@ static void prv_alpha_menu_window_load(Window *window) {
     .get_num_rows = prv_alpha_menu_get_num_rows_callback,
     .draw_row = prv_alpha_menu_draw_row_callback,
     .select_click = prv_alpha_menu_select_callback,
+    .select_long_click = prv_alpha_menu_select_long_callback,
   });
   #ifdef PBL_COLOR
   menu_layer_set_normal_colors(s_app.menu_layers.alpha_menu_layer, GColorYellow, GColorBlack);
@@ -883,6 +1038,22 @@ static void prv_dest_menu_draw_row_callback(GContext *ctx, const Layer *cell_lay
   }
 }
 
+static void prv_dest_menu_select_long_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {
+  int section = cell_index->section;
+  int row = cell_index->row;
+  if (s_app.favourites.count > 0) {
+    if (section == 0) {
+      prv_add_favourite(s_app.favourites.codes[row], s_app.favourites.names[row]);
+      return;
+    }
+    section--;
+  }
+  if (section == 0) {
+    const Station *station = &top_stations[row];
+    prv_add_favourite(station->code, station->name);
+  }
+}
+
 static void prv_dest_menu_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {
   int section = cell_index->section;
   int row = cell_index->row;
@@ -922,6 +1093,7 @@ static void prv_dest_menu_window_load(Window *window) {
     .draw_header = prv_dest_menu_draw_header_callback,
     .draw_row = prv_dest_menu_draw_row_callback,
     .select_click = prv_dest_menu_select_callback,
+    .select_long_click = prv_dest_menu_select_long_callback,
   });
   #ifdef PBL_COLOR
   menu_layer_set_normal_colors(s_app.menu_layers.dest_menu_layer, GColorYellow, GColorBlack);
@@ -942,10 +1114,12 @@ static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) 
   Tuple *station_count_tuple = dict_find(iter, MESSAGE_KEY_STATION_COUNT);
   Tuple *trip_index_tuple = dict_find(iter, MESSAGE_KEY_TRIP_INDEX);
   Tuple *trip_planned_departure_time_tuple = dict_find(iter, MESSAGE_KEY_TRIP_PLANNED_DEPARTURE_TIME);
+  Tuple *trip_planned_departure_epoch_tuple = dict_find(iter, MESSAGE_KEY_TRIP_PLANNED_DEPARTURE_TIME_EPOCH);
   Tuple *trip_departure_time_epoch_tuple = dict_find(iter, MESSAGE_KEY_TRIP_DEPARTURE_TIME_EPOCH);
   Tuple *trip_planned_arrival_time_tuple = dict_find(iter, MESSAGE_KEY_TRIP_PLANNED_ARRIVAL_TIME);
   Tuple *trip_arrival_time_tuple = dict_find(iter, MESSAGE_KEY_TRIP_ARRIVAL_TIME);
   Tuple *trip_arrival_epoch_tuple = dict_find(iter, MESSAGE_KEY_TRIP_ARRIVAL_TIME_EPOCH);
+  Tuple *trip_origin_arrival_epoch_tuple = dict_find(iter, MESSAGE_KEY_TRIP_ORIGIN_ARRIVAL_EPOCH);
   Tuple *trip_transfers_tuple = dict_find(iter, MESSAGE_KEY_TRIP_TRANSFERS);
   Tuple *trip_platform_tuple = dict_find(iter, MESSAGE_KEY_TRIP_PLATFORM);
   Tuple *trip_count_tuple = dict_find(iter, MESSAGE_KEY_TRIP_COUNT);
@@ -1052,6 +1226,10 @@ static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) 
       s_app.trips.arrivals[index][MAX_DATE_TIME_LENGTH - 1] = '\0';
       s_app.trips.arrivals_epoch[index] = trip_arrival_epoch_tuple
           ? trip_arrival_epoch_tuple->value->int32 : 0;
+      s_app.trips.planned_departures_epoch[index] = trip_planned_departure_epoch_tuple
+          ? trip_planned_departure_epoch_tuple->value->int32 : 0;
+      s_app.trips.origin_arrivals_epoch[index] = trip_origin_arrival_epoch_tuple
+          ? trip_origin_arrival_epoch_tuple->value->int32 : 0;
 
       snprintf(s_app.trips.transfers[index], MAX_TRANSFERS_LENGTH, "%d", transfers_val);
       strncpy(s_app.trips.platform[index], platform, MAX_PLATFORM_LENGTH - 1);
@@ -1149,6 +1327,9 @@ static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) 
         // Reload start menu if it exists to show favourites section
         if (s_app.menu_layers.menu_layer) {
           menu_layer_reload_data(s_app.menu_layers.menu_layer);
+        }
+        if (s_app.menu_layers.dest_menu_layer) {
+          menu_layer_reload_data(s_app.menu_layers.dest_menu_layer);
         }
       }
     }
@@ -1325,6 +1506,7 @@ static void prv_init(void) {
   s_app.buffers.letter_str[0] = 'A';
   s_app.buffers.letter_str[1] = '\0';
   s_app.settings.reistijd_enabled = true;
+  s_app.routing.station_offset_min = 2;
 #ifdef PBL_COLOR
   s_mid_band_color = GColorYellow;
 #endif
@@ -1727,57 +1909,89 @@ static void prv_countdown_click_config_provider(void *context) {
 }
 
 static void prv_settings_rebuild_items(void) {
-  strncpy(s_settings_sub[0], s_app.settings.tijd_mode == TIJD_MODE_AANKOMST ? "Aankomst" : "Vertrek", 19);
-  strncpy(s_settings_sub[1], s_app.settings.reistijd_enabled ? "Aan" : "Uit", 19);
-  strncpy(s_settings_sub[2], s_app.settings.vervoer_mode == VERVOER_FIETS ? "Fiets" : "Lopen", 19);
-  s_settings_items[0].title = "Tijd";
-  s_settings_items[0].subtitle = s_settings_sub[0];
-  s_settings_items[1].title = "Reistijd";
-  s_settings_items[1].subtitle = s_settings_sub[1];
-  s_settings_items[2].title = "Vervoer";
-  s_settings_items[2].subtitle = s_settings_sub[2];
+  strncpy(s_settings_sub[0], s_app.settings.reistijd_enabled ? "Ja" : "Nee", 23);
+  strncpy(s_settings_sub[1], s_app.settings.tijd_mode == TIJD_MODE_AANKOMST ? "Aankomst" : "Vertrek", 23);
+  strncpy(s_settings_sub[2], s_app.settings.vervoer_mode == VERVOER_FIETS ? "Fiets" : "Lopen", 23);
+  snprintf(s_settings_sub[3], sizeof(s_settings_sub[3]), "%+d min", s_app.routing.station_offset_min);
 }
 
-static void prv_settings_select_callback(int index, void *context) {
-  if (index == 0) {
-    s_app.settings.tijd_mode = (s_app.settings.tijd_mode == TIJD_MODE_VERTREK) ? TIJD_MODE_AANKOMST : TIJD_MODE_VERTREK;
-  } else if (index == 1) {
-    s_app.settings.reistijd_enabled = !s_app.settings.reistijd_enabled;
-  } else {
-    s_app.settings.vervoer_mode = (s_app.settings.vervoer_mode == VERVOER_LOPEN) ? VERVOER_FIETS : VERVOER_LOPEN;
-  }
+static uint16_t prv_settings_num_rows(MenuLayer *menu_layer, uint16_t section_index, void *context) {
+  (void)menu_layer; (void)section_index; (void)context;
+  return 4;
+}
+
+static void prv_settings_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index, void *context) {
+  (void)context;
+  const char *title = "ORS";
+  if (cell_index->row == 1) title = "Tijd";
+  else if (cell_index->row == 2) title = "Vervoer";
+  else if (cell_index->row == 3) title = "Slack";
+  menu_cell_basic_draw(ctx, cell_layer, title, s_settings_sub[cell_index->row], NULL);
+}
+
+static void prv_settings_apply(void) {
   prv_persist_settings();
   prv_send_settings_to_phone();
   prv_settings_rebuild_items();
-  s_settings_sections[0] = (SimpleMenuSection){ .num_items = 3, .items = s_settings_items };
-  if (s_settings_menu_layer) {
-    menu_layer_reload_data(simple_menu_layer_get_menu_layer(s_settings_menu_layer));
+  if (s_settings_menu_layer) menu_layer_reload_data(s_settings_menu_layer);
+}
+
+static void prv_settings_select(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {
+  (void)menu_layer; (void)context;
+  int row = cell_index->row;
+  if (row == 0) {
+    s_app.settings.reistijd_enabled = !s_app.settings.reistijd_enabled;
+    prv_settings_apply();
+  } else if (row == 1) {
+    s_app.settings.tijd_mode = (s_app.settings.tijd_mode == TIJD_MODE_VERTREK) ? TIJD_MODE_AANKOMST : TIJD_MODE_VERTREK;
+    prv_settings_apply();
+  } else if (row == 2) {
+    s_app.settings.vervoer_mode = (s_app.settings.vervoer_mode == VERVOER_LOPEN) ? VERVOER_FIETS : VERVOER_LOPEN;
+    prv_settings_apply();
+  } else if (row == 3) {
+    s_app.routing.station_offset_min = prv_clamp_offset(s_app.routing.station_offset_min + 1);
+    prv_settings_rebuild_items();
+    if (s_settings_menu_layer) menu_layer_reload_data(s_settings_menu_layer);
+    prv_send_offset_to_phone();
   }
 }
+
+static void prv_settings_select_long(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {
+  (void)menu_layer; (void)context;
+  if (cell_index->row != 3) return;
+  s_app.routing.station_offset_min = prv_clamp_offset(s_app.routing.station_offset_min - 1);
+  prv_settings_rebuild_items();
+  if (s_settings_menu_layer) menu_layer_reload_data(s_settings_menu_layer);
+  prv_send_offset_to_phone();
+}
+
+
 
 static void prv_settings_window_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(window_layer);
   prv_settings_rebuild_items();
-  s_settings_items[0].callback = prv_settings_select_callback;
-  s_settings_items[1].callback = prv_settings_select_callback;
-  s_settings_items[2].callback = prv_settings_select_callback;
-  s_settings_sections[0] = (SimpleMenuSection){ .num_items = 3, .items = s_settings_items };
-  s_settings_menu_layer = simple_menu_layer_create(bounds, window, s_settings_sections, 1, NULL);
+  s_settings_menu_layer = menu_layer_create(bounds);
+  menu_layer_set_click_config_onto_window(s_settings_menu_layer, window);
+  menu_layer_set_callbacks(s_settings_menu_layer, NULL, (MenuLayerCallbacks) {
+    .get_num_rows = prv_settings_num_rows,
+    .draw_row = prv_settings_draw_row,
+    .select_click = prv_settings_select,
+    .select_long_click = prv_settings_select_long,
+  });
 #ifdef PBL_COLOR
-  MenuLayer *ml = simple_menu_layer_get_menu_layer(s_settings_menu_layer);
-  menu_layer_set_normal_colors(ml, GColorYellow, GColorBlack);
-  menu_layer_set_highlight_colors(ml, GColorOxfordBlue, GColorWhite);
+  menu_layer_set_normal_colors(s_settings_menu_layer, GColorYellow, GColorBlack);
+  menu_layer_set_highlight_colors(s_settings_menu_layer, GColorOxfordBlue, GColorWhite);
 #endif
-  layer_add_child(window_layer, simple_menu_layer_get_layer(s_settings_menu_layer));
+  layer_add_child(window_layer, menu_layer_get_layer(s_settings_menu_layer));
 }
 
 static void prv_settings_window_unload(Window *window) {
-  simple_menu_layer_destroy(s_settings_menu_layer);
+  menu_layer_destroy(s_settings_menu_layer);
   s_settings_menu_layer = NULL;
   window_destroy(s_app.windows.settings_window);
   s_app.windows.settings_window = NULL;
-  if (s_app.countdown_ui.vertrek_time_layer) {
+  if (s_app.countdown_ui.over_time_layer) {
     prv_update_countdown_display();
   }
 }
@@ -1785,24 +1999,26 @@ static void prv_settings_window_unload(Window *window) {
  static void prv_countdown_window_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(window_layer);
-  const int bar_height = 40;
+  const bool is_large_display = prv_is_large_display(bounds);
+  const int top_bar = is_large_display ? 30 : 28;
+  const int bot_bar = is_large_display ? 24 : 24;
   s_app.journey.selected_trip_index = 0;
 
   #ifdef PBL_COLOR
-    s_app.countdown_ui.bg_blue_layer = layer_create(GRect(0, 0, bounds.size.w, bar_height));
+    s_app.countdown_ui.bg_blue_layer = layer_create(GRect(0, 0, bounds.size.w, top_bar));
     layer_set_update_proc(s_app.countdown_ui.bg_blue_layer, prv_bg_blue_update_proc);
     layer_add_child(window_layer, s_app.countdown_ui.bg_blue_layer);
-    s_app.countdown_ui.bg_blue_bottom_layer = layer_create(GRect(0, bounds.size.h - bar_height, bounds.size.w, bar_height));
+    s_app.countdown_ui.bg_blue_bottom_layer = layer_create(GRect(0, bounds.size.h - bot_bar, bounds.size.w, bot_bar));
     layer_set_update_proc(s_app.countdown_ui.bg_blue_bottom_layer, prv_bg_blue_update_proc);
     layer_add_child(window_layer, s_app.countdown_ui.bg_blue_bottom_layer);
-    s_app.countdown_ui.bg_yellow_layer = layer_create(GRect(0, bar_height, bounds.size.w, bounds.size.h - (bar_height * 2)));
+    s_app.countdown_ui.bg_yellow_layer = layer_create(GRect(0, top_bar, bounds.size.w, bounds.size.h - top_bar - bot_bar));
     layer_set_update_proc(s_app.countdown_ui.bg_yellow_layer, prv_bg_yellow_update_proc);
     layer_add_child(window_layer, s_app.countdown_ui.bg_yellow_layer);
   #else
-    s_app.countdown_ui.bg_blue_layer = layer_create(GRect(0, 0, bounds.size.w, bar_height));
+    s_app.countdown_ui.bg_blue_layer = layer_create(GRect(0, 0, bounds.size.w, top_bar));
     layer_set_update_proc(s_app.countdown_ui.bg_blue_layer, prv_bg_black_update_proc);
     layer_add_child(window_layer, s_app.countdown_ui.bg_blue_layer);
-    s_app.countdown_ui.bg_blue_bottom_layer = layer_create(GRect(0, bounds.size.h - bar_height, bounds.size.w, bar_height));
+    s_app.countdown_ui.bg_blue_bottom_layer = layer_create(GRect(0, bounds.size.h - bot_bar, bounds.size.w, bot_bar));
     layer_set_update_proc(s_app.countdown_ui.bg_blue_bottom_layer, prv_bg_black_update_proc);
     layer_add_child(window_layer, s_app.countdown_ui.bg_blue_bottom_layer);
   #endif
@@ -1811,142 +2027,129 @@ static void prv_settings_window_unload(Window *window) {
   layer_set_update_proc(s_app.countdown_ui.trip_leg_layer, prv_trip_leg_layer_update_proc);
   layer_add_child(window_layer, s_app.countdown_ui.trip_leg_layer);
 
-  const bool is_large_display = prv_is_large_display(bounds);
-  const int cream_top = bar_height;
-  const int cream_bottom = bounds.size.h - bar_height;
-  const int x_offset = PBL_IF_ROUND_ELSE(17, 6);
-  const int times_y = PBL_IF_ROUND_ELSE(44, cream_top + 1);
-  const int times_h = is_large_display ? 28 : 18;
-  const int t_w = is_large_display ? 62 : 44;
-  const int arrow_w = is_large_display ? 22 : 16;
-  const int plat_size = is_large_display ? 28 : 24;
-  const int plat_x = bounds.size.w - 18 - plat_size;
-  const int plat_y = times_y + 2;
-  const int over_lab_h = 14;
-  const int vtk_lab_h = 14;
-  const int vtk_time_h = is_large_display ? 26 : 20;
-  const int over_lab_y = times_y + times_h;
-  int over_time_y = over_lab_y + over_lab_h - 2;
-  int over_time_h = (cream_bottom - 4) - vtk_lab_h - vtk_time_h - over_time_y;
-  {
-    int cap = is_large_display ? 48 : 26;
-    int floor = is_large_display ? 42 : 22;
-    if (over_time_h > cap) over_time_h = cap;
-    if (over_time_h < floor) over_time_h = floor;
-  }
-  int vtk_lab_y = over_time_y + over_time_h + 2;
-  int vtk_time_y = vtk_lab_y + vtk_lab_h - 2;
-  if (vtk_time_y + vtk_time_h > cream_bottom - 1) {
-    vtk_time_y = cream_bottom - 1 - vtk_time_h;
-    vtk_lab_y = vtk_time_y - vtk_lab_h + 2;
-    if (vtk_lab_y < over_time_y + 20) {
-      over_time_h = vtk_lab_y - over_time_y;
-      if (over_time_h < 22) over_time_h = 22;
-    }
-  }
-  (void)cream_top; (void)t_w; (void)arrow_w; (void)plat_y;
-  int content_w = plat_x - x_offset - 4;
-  if (content_w < 90) {
-    content_w = bounds.size.w - x_offset - 30;
-  }
-  const int vtk_time_w = is_large_display ? 74 : 56;
-  const int delay_x = x_offset + vtk_time_w;
-  int delay_w = x_offset + content_w - delay_x;
-  if (delay_w < 40) delay_w = 48;
+  const int cream_top = top_bar;
+  const int cream_h = bounds.size.h - top_bar - bot_bar;
+  const int x_pad = PBL_IF_ROUND_ELSE(18, 4);
+  const int time_w = is_large_display ? 48 : 44;
+  const int name_w = bounds.size.w - time_w - x_pad - 2;
+  const int bar_name_h = is_large_display ? 22 : 20;
+  const int bar_name_y = (top_bar - bar_name_h) / 2;
+  const int bot_name_y = bounds.size.h - bot_bar + ((bot_bar - bar_name_h) / 2) - 1;
 
-  s_app.countdown_ui.start_station_layer = text_layer_create(GRect(0, 10, bounds.size.w, 30));
+  const int plat_size = is_large_display ? 26 : 22;
+  const int plat_x = bounds.size.w - 6 - plat_size;
+  const int plat_y = cream_top + 2;
+  const int dur_h = 16;
+  const int dur_y = cream_top;
+  const int over_row_h = is_large_display ? 44 : 26;
+  const int over_y = dur_y + dur_h;
+  const int vtk_row_h = is_large_display ? 42 : 24;
+  int vtk_y = over_y + over_row_h;
+  if (vtk_y + vtk_row_h > cream_top + cream_h - 1) {
+    vtk_y = cream_top + cream_h - 1 - vtk_row_h;
+  }
+  const int over_lab_w = 56;
+  const int vtk_lab_w = 56;
+  const int clock_x_over = x_pad + over_lab_w;
+  const int clock_x_vtk = x_pad + vtk_lab_w;
+  const int clock_right = bounds.size.w - 4;
+
+  s_app.countdown_ui.start_station_layer = text_layer_create(GRect(x_pad, bar_name_y, name_w, bar_name_h));
   text_layer_set_text(s_app.countdown_ui.start_station_layer, s_app.journey.start_station_name);
-  text_layer_set_font(s_app.countdown_ui.start_station_layer, fonts_get_system_font(is_large_display ? FONT_KEY_GOTHIC_28_BOLD : FONT_KEY_GOTHIC_24_BOLD));
-  text_layer_set_text_alignment(s_app.countdown_ui.start_station_layer, GTextAlignmentCenter);
+  text_layer_set_font(s_app.countdown_ui.start_station_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+  text_layer_set_text_alignment(s_app.countdown_ui.start_station_layer, GTextAlignmentLeft);
+  text_layer_set_overflow_mode(s_app.countdown_ui.start_station_layer, GTextOverflowModeTrailingEllipsis);
   text_layer_set_background_color(s_app.countdown_ui.start_station_layer, GColorClear);
   text_layer_set_text_color(s_app.countdown_ui.start_station_layer, GColorWhite);
   layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.start_station_layer));
 
-  s_app.countdown_ui.destination_layer = text_layer_create(GRect(0, bounds.size.h - bar_height, bounds.size.w, 30));
+  s_app.countdown_ui.departure_time_layer = text_layer_create(GRect(bounds.size.w - time_w - 2, bar_name_y, time_w, bar_name_h));
+  text_layer_set_font(s_app.countdown_ui.departure_time_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+  text_layer_set_text_alignment(s_app.countdown_ui.departure_time_layer, GTextAlignmentRight);
+  text_layer_set_background_color(s_app.countdown_ui.departure_time_layer, GColorClear);
+  text_layer_set_text_color(s_app.countdown_ui.departure_time_layer, GColorWhite);
+  layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.departure_time_layer));
+
+  s_app.countdown_ui.destination_layer = text_layer_create(GRect(x_pad, bot_name_y, name_w, bar_name_h));
   text_layer_set_text(s_app.countdown_ui.destination_layer, s_app.journey.dest_station_name);
-  text_layer_set_font(s_app.countdown_ui.destination_layer, fonts_get_system_font(is_large_display ? FONT_KEY_GOTHIC_28_BOLD : FONT_KEY_GOTHIC_24_BOLD));
-  text_layer_set_text_alignment(s_app.countdown_ui.destination_layer, GTextAlignmentCenter);
+  text_layer_set_font(s_app.countdown_ui.destination_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+  text_layer_set_text_alignment(s_app.countdown_ui.destination_layer, GTextAlignmentLeft);
+  text_layer_set_overflow_mode(s_app.countdown_ui.destination_layer, GTextOverflowModeTrailingEllipsis);
   text_layer_set_background_color(s_app.countdown_ui.destination_layer, GColorClear);
   text_layer_set_text_color(s_app.countdown_ui.destination_layer, GColorWhite);
   layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.destination_layer));
 
-  s_app.countdown_ui.departure_time_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(17, times_y, 40, times_h), GRect(x_offset, times_y, t_w, times_h)));
-  text_layer_set_font(s_app.countdown_ui.departure_time_layer, fonts_get_system_font(is_large_display ? FONT_KEY_GOTHIC_24_BOLD : FONT_KEY_GOTHIC_18));
-  text_layer_set_text_alignment(s_app.countdown_ui.departure_time_layer, GTextAlignmentLeft);
-  text_layer_set_background_color(s_app.countdown_ui.departure_time_layer, GColorClear);
-  text_layer_set_text_color(s_app.countdown_ui.departure_time_layer, GColorBlack);
-  layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.departure_time_layer));
-
-  s_app.countdown_ui.time_arrow_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(57, times_y, 16, times_h), GRect(x_offset + t_w, times_y, arrow_w, times_h)));
-  text_layer_set_font(s_app.countdown_ui.time_arrow_layer, fonts_get_system_font(is_large_display ? FONT_KEY_GOTHIC_24_BOLD : FONT_KEY_GOTHIC_18));
-  text_layer_set_text_alignment(s_app.countdown_ui.time_arrow_layer, GTextAlignmentCenter);
-  text_layer_set_background_color(s_app.countdown_ui.time_arrow_layer, GColorClear);
-  text_layer_set_text_color(s_app.countdown_ui.time_arrow_layer, GColorBlack);
-  text_layer_set_text(s_app.countdown_ui.time_arrow_layer, ">");
-  layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.time_arrow_layer));
-
-  s_app.countdown_ui.arrival_time_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(73, times_y, 40, times_h), GRect(x_offset + t_w + arrow_w, times_y, t_w, times_h)));
-  text_layer_set_font(s_app.countdown_ui.arrival_time_layer, fonts_get_system_font(is_large_display ? FONT_KEY_GOTHIC_24_BOLD : FONT_KEY_GOTHIC_18));
-  text_layer_set_text_alignment(s_app.countdown_ui.arrival_time_layer, GTextAlignmentLeft);
+  s_app.countdown_ui.arrival_time_layer = text_layer_create(GRect(bounds.size.w - time_w - 2, bot_name_y, time_w, bar_name_h));
+  text_layer_set_font(s_app.countdown_ui.arrival_time_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+  text_layer_set_text_alignment(s_app.countdown_ui.arrival_time_layer, GTextAlignmentRight);
   text_layer_set_background_color(s_app.countdown_ui.arrival_time_layer, GColorClear);
-  text_layer_set_text_color(s_app.countdown_ui.arrival_time_layer, GColorBlack);
+  text_layer_set_text_color(s_app.countdown_ui.arrival_time_layer, GColorWhite);
   layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.arrival_time_layer));
 
-  s_app.countdown_ui.platform_border_layer = layer_create(PBL_IF_ROUND_ELSE(GRect(118, times_y, 24, 24), GRect(plat_x, plat_y, plat_size, plat_size)));
+  s_app.countdown_ui.duration_layer = text_layer_create(GRect(x_pad, dur_y, plat_x - x_pad - 2, dur_h));
+  text_layer_set_font(s_app.countdown_ui.duration_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14));
+  text_layer_set_text_alignment(s_app.countdown_ui.duration_layer, GTextAlignmentCenter);
+  text_layer_set_background_color(s_app.countdown_ui.duration_layer, GColorClear);
+  text_layer_set_text_color(s_app.countdown_ui.duration_layer, GColorBlack);
+  layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.duration_layer));
+
+  s_app.countdown_ui.platform_border_layer = layer_create(PBL_IF_ROUND_ELSE(GRect(118, plat_y, 24, 24), GRect(plat_x, plat_y, plat_size, plat_size)));
   layer_set_update_proc(s_app.countdown_ui.platform_border_layer, prv_platform_border_update_proc);
   layer_add_child(window_layer, s_app.countdown_ui.platform_border_layer);
 
-  s_app.countdown_ui.platform_number_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(120, times_y + 2, 20, 24), GRect(plat_x + 1, plat_y + 2, plat_size - 2, plat_size - 2)));
-  text_layer_set_font(s_app.countdown_ui.platform_number_layer, fonts_get_system_font(is_large_display ? FONT_KEY_GOTHIC_24_BOLD : FONT_KEY_GOTHIC_18_BOLD));
+  s_app.countdown_ui.platform_number_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(120, plat_y + 2, 20, 24), GRect(plat_x + 1, plat_y + 1, plat_size - 2, plat_size - 2)));
+  text_layer_set_font(s_app.countdown_ui.platform_number_layer, fonts_get_system_font(is_large_display ? FONT_KEY_GOTHIC_18_BOLD : FONT_KEY_GOTHIC_14_BOLD));
   text_layer_set_text_alignment(s_app.countdown_ui.platform_number_layer, GTextAlignmentCenter);
   text_layer_set_background_color(s_app.countdown_ui.platform_number_layer, GColorClear);
   text_layer_set_text_color(s_app.countdown_ui.platform_number_layer, GColorOxfordBlue);
   layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.platform_number_layer));
 
-  s_app.countdown_ui.over_label_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(0, over_lab_y, bounds.size.w, over_lab_h), GRect(x_offset, over_lab_y, content_w, over_lab_h)));
+  s_app.countdown_ui.over_label_layer = text_layer_create(GRect(x_pad, over_y + (over_row_h - 16) / 2, over_lab_w, 16));
   text_layer_set_text(s_app.countdown_ui.over_label_layer, "OVER");
   text_layer_set_font(s_app.countdown_ui.over_label_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD));
-  text_layer_set_text_alignment(s_app.countdown_ui.over_label_layer, PBL_IF_ROUND_ELSE(GTextAlignmentCenter, GTextAlignmentLeft));
+  text_layer_set_text_alignment(s_app.countdown_ui.over_label_layer, GTextAlignmentLeft);
   text_layer_set_background_color(s_app.countdown_ui.over_label_layer, GColorClear);
   text_layer_set_text_color(s_app.countdown_ui.over_label_layer, GColorBlack);
   layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.over_label_layer));
 
-  s_app.countdown_ui.over_time_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(0, over_time_y, bounds.size.w, over_time_h), GRect(x_offset, over_time_y, content_w, over_time_h)));
-  text_layer_set_text_alignment(s_app.countdown_ui.over_time_layer, PBL_IF_ROUND_ELSE(GTextAlignmentCenter, GTextAlignmentLeft));
+  s_app.countdown_ui.over_time_layer = text_layer_create(GRect(clock_x_over, over_y, clock_right - clock_x_over, over_row_h));
+  text_layer_set_text_alignment(s_app.countdown_ui.over_time_layer, GTextAlignmentLeft);
+  text_layer_set_overflow_mode(s_app.countdown_ui.over_time_layer, GTextOverflowModeFill);
   text_layer_set_background_color(s_app.countdown_ui.over_time_layer, GColorClear);
   text_layer_set_text_color(s_app.countdown_ui.over_time_layer, GColorBlack);
-  prv_set_over_text("...");
+  prv_set_over_text("--:--");
   layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.over_time_layer));
 
-  s_app.countdown_ui.vertrek_label_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(0, vtk_lab_y, bounds.size.w, vtk_lab_h), GRect(x_offset, vtk_lab_y, content_w, vtk_lab_h)));
+  s_app.countdown_ui.vertrek_label_layer = text_layer_create(GRect(x_pad, vtk_y + (vtk_row_h - 16) / 2, vtk_lab_w, 16));
   text_layer_set_text(s_app.countdown_ui.vertrek_label_layer, "VERTREK");
   text_layer_set_font(s_app.countdown_ui.vertrek_label_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD));
-  text_layer_set_text_alignment(s_app.countdown_ui.vertrek_label_layer, PBL_IF_ROUND_ELSE(GTextAlignmentCenter, GTextAlignmentLeft));
+  text_layer_set_text_alignment(s_app.countdown_ui.vertrek_label_layer, GTextAlignmentLeft);
   text_layer_set_background_color(s_app.countdown_ui.vertrek_label_layer, GColorClear);
   text_layer_set_text_color(s_app.countdown_ui.vertrek_label_layer, GColorBlack);
   layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.vertrek_label_layer));
 
-  s_app.countdown_ui.vertrek_time_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(0, vtk_time_y, bounds.size.w, vtk_time_h), GRect(x_offset, vtk_time_y, vtk_time_w, vtk_time_h)));
-  text_layer_set_font(s_app.countdown_ui.vertrek_time_layer, fonts_get_system_font(is_large_display ? FONT_KEY_GOTHIC_24_BOLD : FONT_KEY_GOTHIC_18_BOLD));
-  text_layer_set_text_alignment(s_app.countdown_ui.vertrek_time_layer, PBL_IF_ROUND_ELSE(GTextAlignmentCenter, GTextAlignmentLeft));
+  s_app.countdown_ui.vertrek_time_layer = text_layer_create(GRect(clock_x_vtk, vtk_y, clock_right - clock_x_vtk - 52, vtk_row_h));
+  text_layer_set_text_alignment(s_app.countdown_ui.vertrek_time_layer, GTextAlignmentLeft);
+  text_layer_set_overflow_mode(s_app.countdown_ui.vertrek_time_layer, GTextOverflowModeFill);
   text_layer_set_background_color(s_app.countdown_ui.vertrek_time_layer, GColorClear);
   text_layer_set_text_color(s_app.countdown_ui.vertrek_time_layer, GColorBlack);
+  prv_set_clock_text(s_app.countdown_ui.vertrek_time_layer, "--:--");
   layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.vertrek_time_layer));
 
-  s_app.countdown_ui.delay_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(0, vtk_time_y + 4, bounds.size.w, 22), GRect(delay_x, vtk_time_y + (is_large_display ? 6 : 4), delay_w, vtk_time_h)));
-  text_layer_set_font(s_app.countdown_ui.delay_layer, fonts_get_system_font(is_large_display ? FONT_KEY_GOTHIC_18 : FONT_KEY_GOTHIC_14));
-  text_layer_set_text_alignment(s_app.countdown_ui.delay_layer, PBL_IF_ROUND_ELSE(GTextAlignmentCenter, GTextAlignmentLeft));
+  s_app.countdown_ui.delay_layer = text_layer_create(GRect(clock_right - 52, vtk_y + (is_large_display ? 8 : 2), 52, vtk_row_h));
+  text_layer_set_font(s_app.countdown_ui.delay_layer, fonts_get_system_font(is_large_display ? FONT_KEY_GOTHIC_28_BOLD : FONT_KEY_GOTHIC_24_BOLD));
+  text_layer_set_text_alignment(s_app.countdown_ui.delay_layer, GTextAlignmentLeft);
   text_layer_set_background_color(s_app.countdown_ui.delay_layer, GColorClear);
+#ifdef PBL_COLOR
+  text_layer_set_text_color(s_app.countdown_ui.delay_layer, GColorRed);
+#else
   text_layer_set_text_color(s_app.countdown_ui.delay_layer, GColorBlack);
+#endif
   layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.delay_layer));
+  layer_set_hidden(text_layer_get_layer(s_app.countdown_ui.delay_layer), true);
 
-  s_app.countdown_ui.clock_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(0, 0, bounds.size.w, 16), GRect(0, 0, bounds.size.w, is_large_display ? 20 : 16)));
-  text_layer_set_font(s_app.countdown_ui.clock_layer, fonts_get_system_font(is_large_display ? FONT_KEY_GOTHIC_18 : FONT_KEY_GOTHIC_14));
-  text_layer_set_text_alignment(s_app.countdown_ui.clock_layer, GTextAlignmentCenter);
-  text_layer_set_background_color(s_app.countdown_ui.clock_layer, GColorClear);
-  text_layer_set_text_color(s_app.countdown_ui.clock_layer, GColorWhite);
-  layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.clock_layer));
-
+  s_app.countdown_ui.clock_layer = NULL;
+  s_app.countdown_ui.time_arrow_layer = NULL;
 
 #ifdef PBL_COLOR
   s_mid_band_color = GColorYellow;
@@ -1957,8 +2160,6 @@ static void prv_settings_window_unload(Window *window) {
   s_app.state.refresh_in_flight = false;
   s_app.state.refresh_timer = app_timer_register(30000, prv_refresh_timer_callback, NULL);
   prv_send_route_request();
-
-  prv_clock_timer_callback(NULL);
 
   prv_update_countdown_display();
 }
@@ -1999,11 +2200,15 @@ static void prv_countdown_window_unload(Window *window) {
   s_app.countdown_ui.over_time_layer = NULL;
   s_app.countdown_ui.vertrek_label_layer = NULL;
   s_app.countdown_ui.vertrek_time_layer = NULL;
-  text_layer_destroy(s_app.countdown_ui.clock_layer);
+  if (s_app.countdown_ui.clock_layer) text_layer_destroy(s_app.countdown_ui.clock_layer);
   text_layer_destroy(s_app.countdown_ui.departure_time_layer);
-  text_layer_destroy(s_app.countdown_ui.time_arrow_layer);
+  if (s_app.countdown_ui.time_arrow_layer) text_layer_destroy(s_app.countdown_ui.time_arrow_layer);
   text_layer_destroy(s_app.countdown_ui.arrival_time_layer);
   text_layer_destroy(s_app.countdown_ui.delay_layer);
+  if (s_app.countdown_ui.duration_layer) text_layer_destroy(s_app.countdown_ui.duration_layer);
+  s_app.countdown_ui.duration_layer = NULL;
+  s_app.countdown_ui.clock_layer = NULL;
+  s_app.countdown_ui.time_arrow_layer = NULL;
 
   layer_destroy(s_app.countdown_ui.trip_leg_layer);
 

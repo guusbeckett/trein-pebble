@@ -28,7 +28,7 @@
 </head>
 <body>
   <h1>Trein (Stef)</h1>
-  <p class="hint">NS key is required. OpenRouteService is optional: VERTREK works without it; OVER stays &hellip; until a walk/bike time is available.</p>
+  <p class="hint">NS key is required. OpenRouteService is optional. Without it (or with ORS = Nee on the watch) OVER/hero still counts down to departure or origin arrival. Default station slack is 2 minutes.</p>
   <label class="field">NS API key
     <input id="api_key" type="password" autocomplete="off">
   </label>
@@ -118,7 +118,7 @@
         var om = offRows[j].querySelector(".mins").value;
         if (!oc) continue;
         var mins = parseInt(om, 10);
-        if (isNaN(mins)) mins = 0;
+        if (isNaN(mins)) mins = 2;
         station_offsets[oc] = mins;
       }
       var result = {

@@ -5,6 +5,23 @@ All notable changes to the Trein Pebble app will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.4] - 02-09-2026
+
+### Changed
+
+- Countdown cream is taller: thinner bottom (and tighter top) blue bars.
+- Planned departure HH:MM sits top-right in the origin blue bar; arrival HH:MM bottom-right in the destination bar. Station names stay left with trailing ellipsis.
+- Cream no longer shows the `18:04 > 19:25` row. Total trip time (`1u21` / `48m`) is small and centered at the top of the cream; platform stays top-right.
+- OVER sits higher. Compact OVER / VERTREK labels on the left, LECO clocks using the rest of the row (42 on flint / Time 2 even in 144x168 qemu).
+- VERTREK counts down to the original/planned departure. Delay is red beside it (`+N`); after planned time it ticks remaining delay. On time hides the slot. Auto-exit is still 3 minutes after actual departure.
+- OVER always shows a departure countdown (actual remain, or leave-by slack when ORS duration exists). Routing failures no longer replace the clock with ORS? / geen route / ...
+- Phone sends `TRIP_PLANNED_DEPARTURE_TIME_EPOCH` and `TRIP_ORIGIN_ARRIVAL_EPOCH` with each trip.
+- Watch settings: ORS ja/nee first, then Tijd, Vervoer, then VAN slack (select +1, long-press -1). Default offset is 2 minutes.
+- ORS = Nee uses a single hero clock (VERTREK to planned departure, or AANKOMST to origin-arrival). ORS = Ja keeps OVER + VERTREK.
+- Phone sends TRIP_ORIGIN_ARRIVAL_EPOCH for the train arriving at VAN. Long-press a station to favourite it.
+- Switching lopen/fiets invalidates the ORS cache and re-routes immediately.
+
+
 ## [1.7.3] - 02-09-2026
 
 ### Changed

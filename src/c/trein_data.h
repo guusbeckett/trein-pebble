@@ -113,6 +113,7 @@ typedef struct {
   TextLayer *arrival_time_layer;
   TextLayer *delay_layer;
   TextLayer *clock_layer;
+  TextLayer *duration_layer;
   Layer *trip_leg_layer;
   Layer *bg_blue_layer;
   Layer *bg_blue_bottom_layer;
@@ -138,8 +139,9 @@ typedef struct {
   char vertrek_buffer[16];
   char departure_time_buffer[6];
   char arrival_time_buffer[6];
-  char delay_buffer[10];
+  char delay_buffer[16];
   char clock_buffer[6];
+  char duration_buffer[16];
   char section_header[16];
   char letter_str[2];
 } DisplayBuffers;
@@ -172,6 +174,8 @@ typedef struct {
   char platform[MAX_TRIPS][MAX_PLATFORM_LENGTH];
   char delay[MAX_TRIPS][MAX_DELAY_LENGTH];
   int arrivals_epoch[MAX_TRIPS];
+  int planned_departures_epoch[MAX_TRIPS];
+  int origin_arrivals_epoch[MAX_TRIPS];
   int count;
   bool loaded;
 } TripData;
