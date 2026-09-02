@@ -212,6 +212,7 @@ typedef struct {
   int spinner_angle;
   bool refresh_in_flight;
   time_t last_button_time;
+  bool selecting_start_station;
 } AppState;
 
 // --- Global App Data Instance ---

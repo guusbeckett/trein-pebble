@@ -56,7 +56,7 @@ function offsetForCode(code) {
   for (var k in map) { if (k.toUpperCase() === up) return parseInt(map[k], 10) || 0; }
   return 0;
 }
-var lastStartCode = "", lastDestCode = "", stationCoords = {}, lastRouted = null, cachedDurationMin = null, orsInFlight = false;
+var lastStartCode = "", lastDestCode = "", stationCoords = {}, lastRouted = null, cachedDurationMin = null, orsInFlight = false, tripsSentOnce = false;
 function haversineMeters(a, b, c, d) {
   var P = Math.PI / 180, dLat = (c - a) * P, dLon = (d - b) * P;
   var x = Math.sin(dLat / 2), y = Math.sin(dLon / 2);
@@ -270,14 +270,11 @@ function locationSuccess(pos) {
 function locationError(err) {
   console.log("Location error: " + err.message);
   console.log("Error code: " + err.code);
-  
-  Pebble.sendAppMessage({
-    "ERROR": 1
-  });
+  Pebble.sendAppMessage({ "STATION_COUNT": 0 });
 }
 
 function convertIsoDateToEpoch(apiDateString) {
-  if (!apiDateString || typeof apiDateString !== 'string') {
+  if (!apiDateString || typeof apiDateString !== 'string' || apiDateString.length < 19 || apiDateString[0] === '-') {
     return 0;
   }
 
@@ -295,9 +292,7 @@ function convertIsoDateToEpoch(apiDateString) {
 function processStationData(data) {
   if (!data.payload || data.payload.length === 0) {
     console.log("No stations found");
-    Pebble.sendAppMessage({
-      "ERROR": 1
-    });
+    Pebble.sendAppMessage({ "STATION_COUNT": 0 });
     return;
   }
 
@@ -342,11 +337,32 @@ function processStationData(data) {
   sendNextStation();
 }
 
-function sendRequest(url, sendToWatchFunction){
+function reportNsFailure(kind, status) {
+  if (kind === "lookup") return;
+  var missingKey = !getApiKey() || status === 401 || status === 403;
+  if (kind === "trips") {
+    if (tripsSentOnce) {
+      Pebble.sendAppMessage({ "STATION_OFFSET": offsetForCode(lastStartCode) });
+      return;
+    }
+    if (missingKey) {
+      Pebble.sendAppMessage({ "ERROR": 1 });
+    }
+    return;
+  }
+  if (missingKey) {
+    Pebble.sendAppMessage({ "ERROR": 1 });
+    return;
+  }
+  Pebble.sendAppMessage({ "STATION_COUNT": 0 });
+}
+
+function sendRequest(url, sendToWatchFunction, kind){
+  kind = kind || "stations";
   var xhr = new XMLHttpRequest();
   xhr.timeout = 8000;
 
-  xhr.open("GET", url, true); // The "true" argument makes it asynchronous.
+  xhr.open("GET", url, true);
   
   xhr.setRequestHeader("Cache-Control", "no-cache");
   xhr.setRequestHeader("Ocp-Apim-Subscription-Key", getApiKey());
@@ -358,29 +374,38 @@ function sendRequest(url, sendToWatchFunction){
         data = JSON.parse(xhr.responseText);
       } catch (e) {
         console.log("Error parsing JSON response: " + e);
-        Pebble.sendAppMessage({
-          "ERROR": 1
-        });
+        reportNsFailure(kind, xhr.status);
         return;
       }
       
       sendToWatchFunction(data);
     } else {
       console.log("Did not receive OK. Status: " + xhr.status);
-      Pebble.sendAppMessage({
-        "ERROR": 1
-      });
+      reportNsFailure(kind, xhr.status);
     }
   };
 
   xhr.onerror = function() {
     console.log("Fetch error: A network error occurred.");
-    Pebble.sendAppMessage({
-      "ERROR": 1
-    });
+    reportNsFailure(kind, 0);
   };
   
   xhr.send();
+}
+
+function lookupStartCoords(code) {
+  if (!code || stationCoords[code]) return;
+  var url = BASE_API_URL + "/nsapp-stations/v2?q=" + encodeURIComponent(code) + "&limit=8";
+  sendRequest(url, function(data) {
+    var list = data.payload || [];
+    if (!Array.isArray(list)) list = list ? [list] : [];
+    for (var i = 0; i < list.length; i++) {
+      rememberStation(list[i]);
+    }
+    if (!stationCoords[code] && list[0]) {
+      rememberStation({ code: code, lat: list[0].lat, lng: list[0].lng });
+    }
+  }, "lookup");
 }
 
 function abbreviateStation(name) {
@@ -537,14 +562,20 @@ function pinToTimeline(payload) {
 function processTripData(data) {
   if (!data.trips || data.trips.length === 0) {
     console.log("No trips found");
-    Pebble.sendAppMessage({
-      "ERROR": 1
-    });
+    reportNsFailure("trips", 200);
     return;
   }
 
 
   var trips = data.trips.slice(0, 5); // Max 5 trips
+  try {
+    var origin = trips[0].legs[0].origin;
+    rememberStation({
+      code: lastStartCode || origin.stationCode || origin.code,
+      lat: origin.lat,
+      lng: origin.lng != null ? origin.lng : origin.lon
+    });
+  } catch (e) {}
 
   // Send each trip to the watch with a delay to avoid buffer overflow
   var sendIndex = 0;
@@ -586,7 +617,11 @@ function processTripData(data) {
     var tripTransfers = trips[sendIndex].transfers;
     var currentIndex = sendIndex;
     var actualDepartureTimeEpoch = convertIsoDateToEpoch(actualDepartureTime);
-
+    var actualArrivalTimeEpoch = convertIsoDateToEpoch(actualArrivalTime);
+    if (!actualArrivalTimeEpoch) {
+      actualArrivalTimeEpoch = convertIsoDateToEpoch(plannedArrivalTime);
+    }
+    tripsSentOnce = true;
 
     Pebble.sendAppMessage({
       "TRIP_INDEX": currentIndex,
@@ -594,6 +629,7 @@ function processTripData(data) {
       "TRIP_DEPARTURE_TIME_EPOCH": actualDepartureTimeEpoch,
       "TRIP_PLANNED_ARRIVAL_TIME": plannedArrivalTime,
       "TRIP_ARRIVAL_TIME": actualArrivalTime,
+      "TRIP_ARRIVAL_TIME_EPOCH": actualArrivalTimeEpoch,
       "TRIP_TRANSFERS": tripTransfers,
       "TRIP_PLATFORM": departurePlatform,
       "TRIP_DELAY": tripDelay,
@@ -614,14 +650,19 @@ function processTripData(data) {
 }
 
 function fetchNearbyStations(lat, lng) {
+  if (!getApiKey()) {
+    Pebble.sendAppMessage({ "ERROR": 1 });
+    return;
+  }
   var url = BASE_API_URL + NEAREST_STATIONS_PATH + "?lat=" + lat + "&lng=" + lng + "&limit=8&includeNonPlannableStations=false";
-  sendRequest(url, processStationData);
+  sendRequest(url, processStationData, "stations");
 }
 
 function requestTrips(start, destination) {
   lastStartCode = start;
   lastDestCode = destination;
+  lookupStartCoords(start);
   const date_now = new Date();
   var url = BASE_API_URL + TRIP_PATH + "?fromStation=" + start + "&toStation=" + destination + "&dateTime=" + date_now.toISOString();
-  sendRequest(url, processTripData);
+  sendRequest(url, processTripData, "trips");
 }

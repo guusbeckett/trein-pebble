@@ -202,49 +202,67 @@ static int prv_atoi(const char *s) {
   return sign * v;
 }
 
-static time_t prv_parse_ns_epoch(const char *iso) {
-  if (!iso || iso[0] == '-' || iso[0] == '\0') return 0;
-  int len = 0;
-  while (iso[len]) len++;
-  if (len < 19) return 0;
-  int Y = (iso[0]-'0')*1000 + (iso[1]-'0')*100 + (iso[2]-'0')*10 + (iso[3]-'0');
-  int Mo = (iso[5]-'0')*10 + (iso[6]-'0');
-  int D = (iso[8]-'0')*10 + (iso[9]-'0');
-  int h = (iso[11]-'0')*10 + (iso[12]-'0');
-  int mi = (iso[14]-'0')*10 + (iso[15]-'0');
-  int s = (iso[17]-'0')*10 + (iso[18]-'0');
-  int y = Y - (Mo <= 2);
-  int era = (y >= 0 ? y : y - 399) / 400;
-  int yoe = y - era * 400;
-  unsigned m = (unsigned)Mo;
-  int doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + D - 1;
-  int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-  int days = era * 146097 + doe - 719468;
-  time_t t = (time_t)days * 86400 + h * 3600 + mi * 60 + s;
-  if (len >= 24) {
-    int sign = (iso[19] == '-') ? -1 : 1;
-    int th = (iso[20]-'0')*10 + (iso[21]-'0');
-    int tmz = (iso[22] == ':') ? (iso[23]-'0')*10 + (iso[24]-'0')
-                              : (iso[22]-'0')*10 + (iso[23]-'0');
-    t -= sign * (th * 3600 + tmz * 60);
-  }
-  return t;
-}
-
-static void prv_fmt_remain(char *buf, size_t n, int remaining) {
-  if (remaining < 0) {
+static void prv_fmt_remain(char *buf, size_t n, int remaining, bool allow_negative) {
+  if (!allow_negative && remaining < 0) {
     snprintf(buf, n, "--:--");
     return;
   }
+  int neg = remaining < 0;
+  if (neg) remaining = -remaining;
   int hours = remaining / 3600;
   int minutes = (remaining % 3600) / 60;
   int seconds = remaining % 60;
-  if (hours > 0) snprintf(buf, n, "%02d:%02d", hours, minutes);
-  else snprintf(buf, n, "%02d:%02d", minutes, seconds);
+  if (hours > 0) snprintf(buf, n, "%s%02d:%02d", neg ? "-" : "", hours, minutes);
+  else snprintf(buf, n, "%s%02d:%02d", neg ? "-" : "", minutes, seconds);
 }
 
 static void prv_stamp_button(void) {
   s_app.state.last_button_time = time(NULL);
+}
+
+static void prv_push_dest_menu(void) {
+  if (!s_app.windows.dest_menu_window) {
+    s_app.windows.dest_menu_window = window_create();
+    window_set_window_handlers(s_app.windows.dest_menu_window, (WindowHandlers) {
+      .load = prv_dest_menu_window_load, .unload = prv_dest_menu_window_unload,
+    });
+  }
+  if (!window_stack_contains_window(s_app.windows.dest_menu_window)) {
+    window_stack_push(s_app.windows.dest_menu_window, true);
+  }
+}
+
+static void prv_open_start_station_picker(void) {
+  s_app.state.selecting_start_station = true;
+  if (s_app.state.fallback_timer) {
+    app_timer_cancel(s_app.state.fallback_timer);
+    s_app.state.fallback_timer = NULL;
+  }
+  if (s_app.state.spinner_timer) {
+    app_timer_cancel(s_app.state.spinner_timer);
+    s_app.state.spinner_timer = NULL;
+  }
+  prv_push_dest_menu();
+}
+
+static void prv_apply_station_choice(const char *code, const char *name) {
+  if (s_app.state.selecting_start_station) {
+    strncpy(s_app.journey.start_station_code, code, sizeof(s_app.journey.start_station_code) - 1);
+    s_app.journey.start_station_code[sizeof(s_app.journey.start_station_code) - 1] = '\0';
+    strncpy(s_app.journey.start_station_name, name, sizeof(s_app.journey.start_station_name) - 1);
+    s_app.journey.start_station_name[sizeof(s_app.journey.start_station_name) - 1] = '\0';
+    s_app.state.selecting_start_station = false;
+    if (s_app.windows.alpha_menu_window &&
+        window_stack_contains_window(s_app.windows.alpha_menu_window)) {
+      window_stack_pop(true);
+    }
+    return;
+  }
+  strncpy(s_app.journey.dest_station_code, code, sizeof(s_app.journey.dest_station_code) - 1);
+  s_app.journey.dest_station_code[sizeof(s_app.journey.dest_station_code) - 1] = '\0';
+  strncpy(s_app.journey.dest_station_name, name, sizeof(s_app.journey.dest_station_name) - 1);
+  s_app.journey.dest_station_name[sizeof(s_app.journey.dest_station_name) - 1] = '\0';
+  prv_send_trip_request();
 }
 
 static void prv_send_route_request(void) {
@@ -282,15 +300,19 @@ static void prv_countdown_timer_callback(void *data) {
   int idx = s_app.journey.selected_trip_index;
   int dep_remain = (int)(s_app.state.departure_time - now);
   bool cancelled = (strncmp(s_app.trips.delay[idx], "Cancelled", 9) == 0);
-  bool hero_vertrek = s_app.routing.at_station || !s_app.settings.reistijd_enabled;
+  bool hero_vertrek = s_app.routing.at_station ||
+      (!s_app.settings.reistijd_enabled && s_app.settings.tijd_mode != TIJD_MODE_AANKOMST);
+  int slack = (s_app.routing.travel_duration_min + s_app.routing.station_offset_min) * 60;
   int over_remain;
+  bool over_uses_slack = s_app.settings.reistijd_enabled && !s_app.routing.at_station;
 
-  if (s_app.settings.tijd_mode == TIJD_MODE_AANKOMST) {
-    time_t arr = (time_t)s_app.trips.arrivals_epoch[idx];
-    over_remain = arr ? (int)(arr - now) : -1;
-  } else {
-    int slack = (s_app.routing.travel_duration_min + s_app.routing.station_offset_min) * 60;
+  if (over_uses_slack) {
     over_remain = dep_remain - slack;
+  } else if (s_app.settings.tijd_mode == TIJD_MODE_AANKOMST) {
+    time_t arr = (time_t)s_app.trips.arrivals_epoch[idx];
+    over_remain = arr ? (int)(arr - now) : 0;
+  } else {
+    over_remain = dep_remain;
   }
 
 #ifdef PBL_COLOR
@@ -298,7 +320,8 @@ static void prv_countdown_timer_callback(void *data) {
     GColor band = GColorYellow;
     if (hero_vertrek) {
       band = GColorWhite;
-    } else if (s_app.routing.have_duration || s_app.settings.tijd_mode == TIJD_MODE_AANKOMST) {
+    } else if ((over_uses_slack && s_app.routing.have_duration) ||
+               (!over_uses_slack && s_app.settings.tijd_mode == TIJD_MODE_AANKOMST)) {
       if (over_remain < 0) band = GColorRed;
       else if (over_remain <= 120) band = GColorYellow;
       else band = GColorGreen;
@@ -319,10 +342,10 @@ static void prv_countdown_timer_callback(void *data) {
     text_layer_set_text(s_app.countdown_ui.vertrek_label_layer, "VERTREK");
     if (cancelled) {
       text_layer_set_text(s_app.countdown_ui.over_time_layer, "--:--");
-    } else if (s_app.settings.tijd_mode != TIJD_MODE_AANKOMST && !s_app.routing.have_duration) {
+    } else if (over_uses_slack && !s_app.routing.have_duration) {
       text_layer_set_text(s_app.countdown_ui.over_time_layer, "...");
     } else {
-      prv_fmt_remain(s_app.buffers.over_buffer, sizeof(s_app.buffers.over_buffer), over_remain);
+      prv_fmt_remain(s_app.buffers.over_buffer, sizeof(s_app.buffers.over_buffer), over_remain, true);
       text_layer_set_text(s_app.countdown_ui.over_time_layer, s_app.buffers.over_buffer);
     }
   }
@@ -330,10 +353,12 @@ static void prv_countdown_timer_callback(void *data) {
   if (cancelled) {
     snprintf(s_app.buffers.vertrek_buffer, sizeof(s_app.buffers.vertrek_buffer), "--:--");
   } else if (dep_remain > 0) {
-    prv_fmt_remain(s_app.buffers.vertrek_buffer, sizeof(s_app.buffers.vertrek_buffer), dep_remain);
+    prv_fmt_remain(s_app.buffers.vertrek_buffer, sizeof(s_app.buffers.vertrek_buffer), dep_remain, false);
   } else {
     snprintf(s_app.buffers.vertrek_buffer, sizeof(s_app.buffers.vertrek_buffer), "Departed");
-    if (s_app.state.last_button_time && (now - s_app.state.last_button_time) >= 180) {
+    time_t idle_since = s_app.state.last_button_time > s_app.state.departure_time
+        ? s_app.state.last_button_time : s_app.state.departure_time;
+    if (s_app.state.departure_time && (now - idle_since) >= 180) {
       window_stack_pop_all(true);
       return;
     }
@@ -624,14 +649,8 @@ static void prv_menu_select_callback(MenuLayer *menu_layer, MenuIndex *cell_inde
   s_app.state.last_selected_index = row;
   strncpy(s_app.journey.start_station_name, s_app.stations.names[row], sizeof(s_app.journey.start_station_name) - 1);
   strncpy(s_app.journey.start_station_code, s_app.stations.codes[row], sizeof(s_app.journey.start_station_code) - 1);
-
-  if (!s_app.windows.dest_menu_window) {
-    s_app.windows.dest_menu_window = window_create();
-    window_set_window_handlers(s_app.windows.dest_menu_window, (WindowHandlers) {
-      .load = prv_dest_menu_window_load, .unload = prv_dest_menu_window_unload,
-    });
-  }
-  window_stack_push(s_app.windows.dest_menu_window, true);
+  s_app.state.selecting_start_station = false;
+  prv_push_dest_menu();
 }
 
 static void prv_menu_window_load(Window *window) {
@@ -671,9 +690,7 @@ static void prv_alpha_menu_draw_row_callback(GContext *ctx, const Layer *cell_la
 static void prv_alpha_menu_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {
   int station_index = alphabet_index[s_app.state.selected_alphabet_index].start_index + cell_index->row;
   const Station *station = &all_stations[station_index];
-  strncpy(s_app.journey.dest_station_code, station->code, sizeof(s_app.journey.dest_station_code) - 1);
-  strncpy(s_app.journey.dest_station_name, station->name, sizeof(s_app.journey.dest_station_name) - 1);
-  prv_send_trip_request();
+  prv_apply_station_choice(station->code, station->name);
 }
 
 static void prv_alpha_menu_window_load(Window *window) {
@@ -759,9 +776,7 @@ static void prv_dest_menu_select_callback(MenuLayer *menu_layer, MenuIndex *cell
 
   if (s_app.favourites.count > 0) {
     if (section == 0) {
-      strncpy(s_app.journey.dest_station_code, s_app.favourites.codes[row], sizeof(s_app.journey.dest_station_code) - 1);
-      strncpy(s_app.journey.dest_station_name, s_app.favourites.names[row], sizeof(s_app.journey.dest_station_name) - 1);
-      prv_send_trip_request();
+      prv_apply_station_choice(s_app.favourites.codes[row], s_app.favourites.names[row]);
       return;
     }
     section--;
@@ -769,9 +784,7 @@ static void prv_dest_menu_select_callback(MenuLayer *menu_layer, MenuIndex *cell
 
   if (section == 0) {
     const Station *station = &top_stations[row];
-    strncpy(s_app.journey.dest_station_code, station->code, sizeof(s_app.journey.dest_station_code) - 1);
-    strncpy(s_app.journey.dest_station_name, station->name, sizeof(s_app.journey.dest_station_name) - 1);
-    prv_send_trip_request();
+    prv_apply_station_choice(station->code, station->name);
   } else {
     s_app.state.selected_alphabet_index = row;
     if (!s_app.windows.alpha_menu_window) {
@@ -816,6 +829,7 @@ static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) 
   Tuple *trip_departure_time_epoch_tuple = dict_find(iter, MESSAGE_KEY_TRIP_DEPARTURE_TIME_EPOCH);
   Tuple *trip_planned_arrival_time_tuple = dict_find(iter, MESSAGE_KEY_TRIP_PLANNED_ARRIVAL_TIME);
   Tuple *trip_arrival_time_tuple = dict_find(iter, MESSAGE_KEY_TRIP_ARRIVAL_TIME);
+  Tuple *trip_arrival_epoch_tuple = dict_find(iter, MESSAGE_KEY_TRIP_ARRIVAL_TIME_EPOCH);
   Tuple *trip_transfers_tuple = dict_find(iter, MESSAGE_KEY_TRIP_TRANSFERS);
   Tuple *trip_platform_tuple = dict_find(iter, MESSAGE_KEY_TRIP_PLATFORM);
   Tuple *trip_count_tuple = dict_find(iter, MESSAGE_KEY_TRIP_COUNT);
@@ -842,7 +856,16 @@ static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) 
   Tuple *settings_vervoer_tuple = dict_find(iter, MESSAGE_KEY_SETTINGS_VERVOER);
   
   if (error_tuple) {
+    s_app.state.refresh_in_flight = false;
+    if (s_app.trips.loaded) {
+      return;
+    }
     text_layer_set_text(s_app.main_ui.text_layer, "Add API key in settings...");
+    return;
+  }
+
+  if (station_count_tuple && station_count_tuple->value->int32 <= 0) {
+    prv_open_start_station_picker();
     return;
   }
 
@@ -878,12 +901,12 @@ static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) 
     }
   }
 
-  if (trip_index_tuple && trip_departure_time_epoch_tuple && trip_arrival_time_tuple && trip_transfers_tuple && trip_count_tuple && trip_platform_tuple && trip_delay_tuple && trip_planned_departure_time_tuple && trip_planned_arrival_time_tuple) {
+  if (trip_index_tuple && trip_departure_time_epoch_tuple && trip_transfers_tuple && trip_count_tuple && trip_platform_tuple && trip_delay_tuple && trip_planned_departure_time_tuple && trip_planned_arrival_time_tuple) {
     int index = trip_index_tuple->value->int32;
     const char *planned_departure_time = trip_planned_departure_time_tuple->value->cstring;
     int departure_time = trip_departure_time_epoch_tuple->value->int32;
     const char *planned_arrival_time = trip_planned_arrival_time_tuple->value->cstring;
-    const char *arrival_time = trip_arrival_time_tuple->value->cstring;
+    const char *arrival_time = trip_arrival_time_tuple ? trip_arrival_time_tuple->value->cstring : "";
     int count = trip_count_tuple->value->int32;
     int transfers_val = trip_transfers_tuple->value->int32;
     const char *platform = trip_platform_tuple->value->cstring;
@@ -903,10 +926,8 @@ static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) 
       s_app.trips.planned_arrivals[index][MAX_DATE_TIME_LENGTH - 1] = '\0';
       strncpy(s_app.trips.arrivals[index], arrival_time, MAX_DATE_TIME_LENGTH - 1);
       s_app.trips.arrivals[index][MAX_DATE_TIME_LENGTH - 1] = '\0';
-      s_app.trips.arrivals_epoch[index] = (int)prv_parse_ns_epoch(arrival_time);
-      if (!s_app.trips.arrivals_epoch[index]) {
-        s_app.trips.arrivals_epoch[index] = (int)prv_parse_ns_epoch(planned_arrival_time);
-      }
+      s_app.trips.arrivals_epoch[index] = trip_arrival_epoch_tuple
+          ? trip_arrival_epoch_tuple->value->int32 : 0;
 
       snprintf(s_app.trips.transfers[index], MAX_TRANSFERS_LENGTH, "%d", transfers_val);
       strncpy(s_app.trips.platform[index], platform, MAX_PLATFORM_LENGTH - 1);
@@ -1636,7 +1657,6 @@ static void prv_settings_window_unload(Window *window) {
   text_layer_set_text_color(s_app.countdown_ui.clock_layer, GColorWhite);
   layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.clock_layer));
 
-  prv_stamp_button();
 #ifdef PBL_COLOR
   s_mid_band_color = GColorYellow;
 #endif
