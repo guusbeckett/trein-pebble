@@ -17,8 +17,8 @@
   "private": true,
   "dependencies": {},
   "pebble": {
-    "displayName": "Trein",
-    "uuid": "d0451463-ab5c-48c9-8278-95a4085b0ffe",
+    "displayName": "Trein (Stef)",
+    "uuid": "026fe1f0-12c4-4598-b240-7cc69509d724",
     "sdkVersion": "3",
     "enableMultiJS": true,
     "targetPlatforms": [
@@ -26,7 +26,8 @@
       "basalt",
       "chalk",
       "diorite",
-      "emery"
+      "emery",
+      "flint"
     ],
     "watchapp": {
       "watchface": false
@@ -76,13 +77,15 @@
       "PIN_IS_LAST"
     ],
     "resources": {
-        "media": [{
+      "media": [
+        {
           "menuIcon": true,
           "type": "png",
           "name": "IMAGE_MENU_ICON",
           "file": "images/icon.png"
-        }]
-      },
+        }
+      ]
+    },
     "configurable": "config.html",
     "capabilities": [
       "location",
