@@ -9,14 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Flint/Time 2 countdown chrome: current time, planned dep, and dest arrival are Gothic 18. Station names stay centered Gothic 18 Bold in the blue bars with side slots for the clock and HH:MM.
-- Cream band no longer shows `HH:MM > HH:MM`. That row is total trip duration only, centered (`1u16` / `48m`). Platform stays top-right of cream, left of the leg dots.
+- Flint/Time 2 countdown chrome: current time, planned dep, and dest arrival are Gothic 18. Station names are centered (Gothic 24 Bold on 200px Flint, 18 Bold on narrower) with side slots so they do not overlap the HH:MM times.
+- Cream row under the top bar is total duration only (`1u16` / `48m`), centered. Platform stays left of the leg dots.
+- ORS off: one hero LECO 42 clock. Label is VERTREK or AANKOMST (Tijd) in the small OVER font. Second clock row is hidden.
+- ORS on: OVER hero + VERTREK row. OVER/VERTREK labels are black on cream/yellow/green (white only on the red band).
 
 ### Fixed
 
-- OVER now gets ORS minutes on device: dest pick and countdown send REQUEST_ROUTE plus settings; JS always `handleRouteTick` after dest is known when Reistijd is on.
-- Phone GPS: retry `getCurrentPosition`, then reuse `lastGps` from the nearest-stations fix so a route can run without a second GPS lock. Start-station coords come from the nearest payload and NS lookup.
-- ORS POST is queued behind NS trip AppMessages but still sent. Key is trimmed. Authorization header (no Bearer). No haversine duration; OVER stays `...` until minutes arrive.
+- Defer Van alpha pop off the MenuLayer select callback.
+- Settings and pin unload no longer `window_destroy` the window currently unloading.
+- Skipped NS trips are compacted so `received_mask` completes (or fail timer arms). Trip outbox / ERROR before the 10ms overlay also arms the fail timer.
+- LEG_COUNT, journey details, and pin queue clamp to MAX_LEGS / 4.
+- ROUTE_ERROR or no GPS and no lastGps: OVER falls back to actual remain (no infinite `...`, no haversine duration).
+- Countdown OOM during load pops the half-built window.
+- GPS ticks do not `requestTrips`. ORS is queued behind trips; lastGps comes from nearby GPS; POST to HeiGIT.
 
 ## [1.7.6] - 02-09-2026
 

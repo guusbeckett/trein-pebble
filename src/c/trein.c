@@ -1688,7 +1688,7 @@ static void prv_pop_alpha_timeout(void *data) {
   s_pop_alpha_timer = NULL;
   if (s_app.windows.alpha_menu_window &&
       window_stack_contains_window(s_app.windows.alpha_menu_window)) {
-    window_stack_pop(true);
+    window_stack_remove(s_app.windows.alpha_menu_window, false);
   }
 }
 
@@ -1823,7 +1823,11 @@ static void prv_send_trip_request(void) {
     if (s_app.settings.reistijd_enabled) {
       prv_write_route_payload(iter);
     }
-    app_message_outbox_send();
+    if (app_message_outbox_send() != APP_MSG_OK) {
+      prv_arm_loading_fail();
+    }
+  } else {
+    prv_arm_loading_fail();
   }
 }
 
@@ -1836,7 +1840,10 @@ static int prv_clamp_trip_idx(int trip_idx) {
 
 static uint16_t prv_journey_details_get_num_rows_callback(MenuLayer *menu_layer, uint16_t section_index, void *context) {
   int trip_idx = prv_clamp_trip_idx(s_app.journey.selected_trip_index);
-  return s_app.trip_legs[trip_idx].leg_count;
+  int n = s_app.trip_legs[trip_idx].leg_count;
+  if (n < 0) n = 0;
+  if (n > MAX_LEGS) n = MAX_LEGS;
+  return (uint16_t)n;
 }
 
 static int16_t prv_journey_details_get_cell_height_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {
@@ -1846,6 +1853,9 @@ static int16_t prv_journey_details_get_cell_height_callback(MenuLayer *menu_laye
 static void prv_journey_details_draw_row_callback(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index, void *context) {
   int trip_idx = prv_clamp_trip_idx(s_app.journey.selected_trip_index);
   int leg_idx = cell_index->row;
+  int n = s_app.trip_legs[trip_idx].leg_count;
+  if (n > MAX_LEGS) n = MAX_LEGS;
+  if (leg_idx < 0 || leg_idx >= n) return;
   LegData *leg = &s_app.trip_legs[trip_idx].legs[leg_idx];
 
   GRect bounds = layer_get_bounds(cell_layer);
@@ -1945,6 +1955,9 @@ static void prv_pin_leg_callback(int index, void *context) {
 static void prv_pin_journey_callback(int index, void *context) {
   int trip_idx = prv_clamp_trip_idx(s_app.journey.selected_trip_index);
   int leg_count = s_app.trip_legs[trip_idx].leg_count;
+  if (leg_count > MAX_LEGS) leg_count = MAX_LEGS;
+  if (leg_count > MAX_PIN_QUEUE) leg_count = MAX_PIN_QUEUE;
+  if (leg_count < 0) leg_count = 0;
   s_pin_queue_count = leg_count;
   s_pin_queue_sent = 0;
   for (int i = 0; i < leg_count; i++) {
@@ -1982,19 +1995,20 @@ static void prv_pin_menu_window_load(Window *window) {
 }
 
 static void prv_pin_menu_window_unload(Window *window) {
+  (void)window;
   simple_menu_layer_destroy(s_pin_simple_menu_layer);
   s_pin_simple_menu_layer = NULL;
-  window_destroy(s_app.windows.pin_menu_window);
-  s_app.windows.pin_menu_window = NULL;
 }
 
 static void prv_journey_details_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {
   s_pin_selected_leg_index = cell_index->row;
-  s_app.windows.pin_menu_window = window_create();
-  window_set_window_handlers(s_app.windows.pin_menu_window, (WindowHandlers){
-    .load = prv_pin_menu_window_load,
-    .unload = prv_pin_menu_window_unload,
-  });
+  if (!s_app.windows.pin_menu_window) {
+    s_app.windows.pin_menu_window = window_create();
+    window_set_window_handlers(s_app.windows.pin_menu_window, (WindowHandlers){
+      .load = prv_pin_menu_window_load,
+      .unload = prv_pin_menu_window_unload,
+    });
+  }
   window_stack_push(s_app.windows.pin_menu_window, true);
 }
 
@@ -2150,18 +2164,26 @@ static void prv_settings_window_load(Window *window) {
 }
 
 static void prv_settings_window_unload(Window *window) {
+  (void)window;
   menu_layer_destroy(s_settings_menu_layer);
   s_settings_menu_layer = NULL;
-  window_destroy(s_app.windows.settings_window);
-  s_app.windows.settings_window = NULL;
   if (s_app.countdown_ui.over_time_layer) {
     prv_update_countdown_display();
+  }
+}
+
+static void prv_cd_oom_pop(void *data) {
+  (void)data;
+  if (s_app.windows.countdown_window &&
+      window_stack_contains_window(s_app.windows.countdown_window)) {
+    window_stack_remove(s_app.windows.countdown_window, false);
   }
 }
 
 static bool prv_cd_alive(void *p) {
   if (p) return true;
   APP_LOG(APP_LOG_LEVEL_ERROR, "countdown load OOM heap=%d", (int)heap_bytes_free());
+  app_timer_register(10, prv_cd_oom_pop, NULL);
   return false;
 }
 
@@ -2213,7 +2235,9 @@ static bool prv_cd_alive(void *p) {
   const int name_x = side_slot;
   const int name_w = bounds.size.w - 2 * side_slot;
   GFont chrome_time_font = fonts_get_system_font(is_large_display ? FONT_KEY_GOTHIC_18 : FONT_KEY_GOTHIC_14);
-  GFont chrome_name_font = fonts_get_system_font(is_large_display ? FONT_KEY_GOTHIC_18_BOLD : FONT_KEY_GOTHIC_14_BOLD);
+  GFont chrome_name_font = fonts_get_system_font(
+      (is_large_display && bounds.size.w >= 180) ? FONT_KEY_GOTHIC_24_BOLD :
+      (is_large_display ? FONT_KEY_GOTHIC_18_BOLD : FONT_KEY_GOTHIC_14_BOLD));
 
   const int plat_size = is_large_display ? 26 : 22;
   const int line_x = bounds.size.w - 12;
@@ -2368,6 +2392,7 @@ static bool prv_cd_alive(void *p) {
       !s_app.countdown_ui.duration_layer || !s_app.countdown_ui.delay_layer ||
       !s_app.countdown_ui.platform_border_layer || !s_app.countdown_ui.platform_number_layer) {
     APP_LOG(APP_LOG_LEVEL_ERROR, "countdown load OOM heap=%d", (int)heap_bytes_free());
+    app_timer_register(10, prv_cd_oom_pop, NULL);
     return;
   }
   if (s_app.state.refresh_timer) {

@@ -347,6 +347,7 @@ function handleRouteTick(vervoer, force) {
       routeTickMissedDest = true;
       lookupStartCoords(lastStartCode);
     }
+    sendRouteError(2);
   }
   function tryPos(attempt) {
     if (typeof Pebble !== "undefined" && Pebble.platform === "pypkjs") {
@@ -485,7 +486,6 @@ Pebble.addEventListener("appmessage", function(e) {
     if (reistijd == null) reistijd = parseInt(lsGet("settings_reistijd", "1"), 10);
     else lsSet("settings_reistijd", String(reistijd));
     if (parseInt(reistijd, 10) === 0) {
-      if (tripsSentOnce && lastStartCode && lastDestCode && !tripsInFlight) requestTrips(lastStartCode, lastDestCode);
       sendRouteToWatch(null, false);
     } else {
       handleRouteTick(vervoer, true);
@@ -856,7 +856,19 @@ function processTripData(data) {
   }
 
 
-  var trips = data.trips.slice(0, 5); // Max 5 trips
+  var rawTrips = data.trips.slice(0, 5);
+  var trips = [];
+  for (var ti = 0; ti < rawTrips.length; ti++) {
+    var cand = rawTrips[ti];
+    var fl = cand && cand.legs && cand.legs[0];
+    var ll = lastTrainLeg(cand);
+    if (!fl || !fl.origin || !ll || !ll.destination) continue;
+    trips.push(cand);
+  }
+  if (!trips.length) {
+    reportNsFailure("trips", 200);
+    return;
+  }
   try {
     var origin = trips[0].legs[0].origin;
     rememberStation({
