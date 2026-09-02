@@ -1,6 +1,22 @@
-# Trein
+# Trein (Stef)
+
+Stef's personal fork of the Trein Pebble app with enhanced UX improvements.
 
 A Pebble smartwatch app that shows live train information from Nederlandse Spoorwegen (Dutch Railways), including countdowns to your next train, departure times, and platform information.
+
+**Fork-specific improvements:**
+- **Location fallback**: If geolocation fails or times out, the app automatically falls back to manual station selection instead of requiring an app restart
+- **Loading indicators**: Clear loading UI with animated spinner when fetching trip data, so slow API responses are distinguishable from dropped taps
+- **OVER/VERTREK commute layout**: Smart countdown screen showing both "time until you must leave" (OVER) and "time until train departs" (VERTREK), with color-coded background (green/yellow/red) based on available slack time
+- **Real-time routing**: Integrated OpenRouteService routing for walking/cycling directions to the departure station, with automatic GPS-based re-routing when you move
+- **30-second refresh cycle**: Automatically refreshes NS delay information AND GPS position every 30 seconds while viewing a trip
+- **On-station detection**: When you arrive at the station (within ~150m), routing stops and the display switches to departure-focused layout
+- **Long-press settings**: Long-press SELECT on countdown screen to access watch-based settings (Tijd mode, Reistijd on/off, Vervoer walk/bike)
+- **Auto-exit to watchface**: After the train departs and 3 minutes of inactivity, automatically returns to watchface
+- **Vibration alerts**: Gentle vibration when NS updates the actual departure time due to delay changes
+- **Increased API timeout**: Extended NS API timeout from 2s to 8s for more reliable operation on slower connections
+
+**Original project**: https://github.com/guusbeckett/trein-pebble
 
 ## Features
 
@@ -20,7 +36,8 @@ To use this app, you need:
 
 1. A Pebble smartwatch
 2. The Pebble app installed on your smartphone
-3. **An NS API key** from the [NS API Portal](https://apiportal.ns.nl/)
+3. **An NS API key** from the [NS API Portal](https://apiportal.ns.nl/) (required)
+4. **An OpenRouteService API key** from [OpenRouteService](https://openrouteservice.org/dev/#/signup) (optional but recommended for OVER/VERTREK routing features)
 
 ## Installation
 
@@ -40,6 +57,17 @@ To use this app, you need:
 4. Generate an API key
 5. Copy the key and paste it in the app settings
 
+### Getting an OpenRouteService API Key (Optional)
+
+The OVER/VERTREK routing features require an OpenRouteService API key for real walking/cycling directions to your departure station. Without this key, the OVER timer will show a GPS spinner and routing features will be disabled (VERTREK timer still works).
+
+1. Visit [OpenRouteService](https://openrouteservice.org/dev/#/signup)
+2. Create a free account
+3. Request a free API token (Standard plan: 2000 requests/day)
+4. Copy the API key and paste it in the app settings under "Routing API Key"
+
+**Important**: This fork uses ONLY real routed walking/cycling directions via OpenRouteService. No fallback calculations are performed. The free tier is sufficient for personal use with the 30-second refresh cycle.
+
 ## Usage
 
 1. Open the Trein app on your Pebble watch
@@ -50,16 +78,81 @@ To use this app, you need:
 6. Press SELECT on a leg to pin it (or the whole journey) to the Pebble Timeline
 7. Use the countdown timer to see exactly how much time you have before your next train, maybe you can still grab a drink at AH To Go!
 
+### OVER/VERTREK Layout Features
+
+The countdown screen shows two timers:
+
+- **OVER (large)**: Time until you must leave to catch the train, accounting for walking/cycling time + per-station buffer
+- **VERTREK (small)**: Countdown to actual (delayed) train departure
+
+**Background colors** (on color Pebbles):
+- **Green**: More than 2 minutes of slack time
+- **Yellow**: 0-2 minutes of slack
+- **Red**: Negative slack (running late)
+
+**On-station behavior**: When GPS detects you're at the departure station (~150m radius), the OVER timer hides and VERTREK becomes the hero countdown.
+
+**Settings** (long-press SELECT on countdown screen):
+- **Tijd**: Choose between Vertrek (departure) or Aankomst (arrival) countdown mode
+- **Reistijd**: Toggle travel time calculation on/off
+- **Vervoer**: Choose between Lopen (walking) or Fiets (cycling) for route calculations
+
+**Automatic updates**:
+- Every 30 seconds: refreshes NS delay info AND GPS position
+- Routing recalculates only when you move >80 meters
+- Vibrates once when NS changes the actual departure time
+- Auto-exits to watchface 3 minutes after train departs (if no button presses)
+
+### Advanced Configuration
+
+**Per-station offsets** (configured via phone settings):
+- Add extra buffer time (positive) or reduce time (negative) for specific stations
+- Keyed by station code (e.g., "Ut", "Asd", "Rtd")
+- Example: Add 2 minutes for Utrecht Centraal because of the long platforms
+
+**Phone config page** (if you create your own):
+- The app expects config parameters: `api_key`, `routing_api_key`, `station_offsets`, `favourites`
+- Default config URL: `https://guusbeckett.github.io/config.html` (original)
+- For testing, you can set values directly in localStorage via browser console
+
 ## Development
 
 ### Building from Source
 
 This is a Pebble SDK 3 project. First install the [Pebble SDK](https://developer.repebble.com/sdk/)
+
 To build:
 
 ```bash
 pebble build
 ```
+
+### Sideloading onto Pebble Time 2
+
+To install the built app onto your Pebble watch:
+
+1. Ensure your phone and watch are connected
+2. Enable Developer Connection in the Pebble mobile app (Settings → Developer Mode)
+3. Run:
+
+```bash
+pebble install --phone <your-phone-ip>
+```
+
+Or use the Pebble mobile app to install the `.pbw` file from `build/` directory.
+
+### Testing
+
+The app can be tested with the Pebble emulator:
+
+```bash
+pebble install --emulator flint
+```
+
+For full functionality testing (GPS, routing, NS API), you must use a physical device with:
+- Valid NS API key configured
+- Valid OpenRouteService API key (optional, for routing features)
+- Location services enabled on phone
 
 ### Project Structure
 

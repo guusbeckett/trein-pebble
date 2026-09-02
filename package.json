@@ -74,18 +74,25 @@
       "PIN_DEP_STATION",
       "PIN_ARR_STATION",
       "PIN_PLATFORM",
-      "PIN_IS_LAST"
+      "PIN_IS_LAST",
+      "REQUEST_ROUTE",
+      "ROUTE_DURATION",
+      "ROUTE_MODE",
+      "STATION_OFFSET",
+      "GPS_LAT",
+      "GPS_LNG",
+      "SETTINGS_TIJD_MODE",
+      "SETTINGS_REISTIJD",
+      "SETTINGS_VERVOER"
     ],
     "resources": {
-      "media": [
-        {
+        "media": [{
           "menuIcon": true,
           "type": "png",
           "name": "IMAGE_MENU_ICON",
           "file": "images/icon.png"
-        }
-      ]
-    },
+        }]
+      },
     "configurable": "config.html",
     "capabilities": [
       "location",

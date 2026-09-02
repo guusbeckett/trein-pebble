@@ -31,6 +31,41 @@ function getApiKey() {
   return DEFAULT_API_KEY;
 }
 
+function getRoutingApiKey() {
+  try {
+    var key = localStorage.getItem("routing_api_key");
+    return key || "";
+  } catch (e) {
+    return "";
+  }
+}
+
+function getStationOffsets() {
+  try {
+    var offsets = localStorage.getItem("station_offsets");
+    return offsets ? JSON.parse(offsets) : {};
+  } catch (e) {
+    return {};
+  }
+}
+
+function getRouteMode() {
+  try {
+    var mode = localStorage.getItem("route_mode");
+    return mode === "bike" ? 1 : 0;
+  } catch (e) {
+    return 0;
+  }
+}
+
+function setRouteMode(mode) {
+  try {
+    localStorage.setItem("route_mode", mode === 1 ? "bike" : "walk");
+  } catch (e) {
+    console.log("Error saving route mode");
+  }
+}
+
 function getFavourites() {
   try {
     var favourites = localStorage.getItem("favourites");
@@ -81,9 +116,16 @@ function sendFavouritesToWatch() {
 Pebble.addEventListener("showConfiguration", function(e) {
   var url = "https://guusbeckett.github.io/config.html";
   var currentKey = getApiKey();
+  var routingKey = getRoutingApiKey();
+  var offsets = getStationOffsets();
   var favourites = getFavourites();
 
-  Pebble.openURL(url + "?api_key=" + encodeURIComponent(currentKey) + "&favourites=" + encodeURIComponent(JSON.stringify(favourites)));
+  var params = "?api_key=" + encodeURIComponent(currentKey) +
+               "&routing_api_key=" + encodeURIComponent(routingKey) +
+               "&station_offsets=" + encodeURIComponent(JSON.stringify(offsets)) +
+               "&favourites=" + encodeURIComponent(JSON.stringify(favourites));
+  
+  Pebble.openURL(url + params);
 });
 
 Pebble.addEventListener("webviewclosed", function(e) {
@@ -98,6 +140,14 @@ Pebble.addEventListener("webviewclosed", function(e) {
       localStorage.setItem("api_key", settings.api_key);
       console.log("Saved new API key.");
     }
+    if (settings.routing_api_key !== undefined) {
+      localStorage.setItem("routing_api_key", settings.routing_api_key);
+      console.log("Saved routing API key.");
+    }
+    if (settings.station_offsets) {
+      localStorage.setItem("station_offsets", JSON.stringify(settings.station_offsets));
+      console.log("Saved station offsets.");
+    }
     if (settings.favourites) {
       localStorage.setItem("favourites", JSON.stringify(settings.favourites));
       console.log("Saved favourites: " + settings.favourites.length);
@@ -108,6 +158,151 @@ Pebble.addEventListener("webviewclosed", function(e) {
   }
 });
 
+
+// Routing state
+var routingState = {
+  lastRoutedLat: null,
+  lastRoutedLng: null,
+  lastDuration: 0,
+  routeInFlight: false,
+  atStation: false
+};
+
+// Station coordinates (top stations from NS API)
+var stationCoords = {
+  'Ut': {lat: 52.0889, lng: 5.1100},
+  'Gvc': {lat: 52.0115, lng: 4.3571},
+  'Rtd': {lat: 51.9244, lng: 4.4694},
+  'Asd': {lat: 52.3789, lng: 4.9001},
+  'Gd': {lat: 51.8356, lng: 4.4785},
+  'Bd': {lat: 51.5892, lng: 4.7762},
+  'Tb': {lat: 51.5653, lng: 5.0818}
+};
+
+var ROUTE_DISPLACEMENT_THRESHOLD = 80; // meters
+
+function distanceMeters(lat1, lng1, lat2, lng2) {
+  var R = 6371000; // meters
+  var dLat = (lat2 - lat1) * Math.PI / 180;
+  var dLng = (lng2 - lng1) * Math.PI / 180;
+  var a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+          Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+          Math.sin(dLng/2) * Math.sin(dLng/2);
+  var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  return R * c;
+}
+
+function checkAtStation(lat, lng, stationCode) {
+  var station = stationCoords[stationCode];
+  if (!station) return false;
+  
+  var dist = distanceMeters(lat, lng, station.lat, station.lng);
+  return dist <= 150; // ~150m radius
+}
+
+function sendRouteDurationToWatch(duration, stationCode, atStation) {
+  var offsets = getStationOffsets();
+  var offset = offsets[stationCode] || 0;
+  
+  Pebble.sendAppMessage({
+    "ROUTE_DURATION": duration,
+    "STATION_OFFSET": offset,
+    "GPS_LAT": 1, // Signal that GPS is active
+    "GPS_LNG": atStation ? 1 : 0 // Use as at_station flag
+  });
+}
+
+function requestOpenRouteService(lat, lng, stationCode, mode) {
+  var apiKey = getRoutingApiKey();
+  if (!apiKey) {
+    console.log("No ORS key - cannot route");
+    routingState.routeInFlight = false;
+    return;
+  }
+  
+  var station = stationCoords[stationCode];
+  if (!station) {
+    console.log("Station coords unknown: " + stationCode);
+    routingState.routeInFlight = false;
+    return;
+  }
+  
+  var profile = (mode === 1) ? "cycling-regular" : "foot-walking";
+  var url = "https://api.openrouteservice.org/v2/directions/" + profile +
+            "?api_key=" + apiKey +
+            "&start=" + lng + "," + lat +
+            "&end=" + station.lng + "," + station.lat;
+  
+  var xhr = new XMLHttpRequest();
+  xhr.timeout = 8000;
+  xhr.open("GET", url, true);
+  
+  xhr.onload = function() {
+    routingState.routeInFlight = false;
+    if (xhr.status === 200) {
+      try {
+        var data = JSON.parse(xhr.responseText);
+        if (data.features && data.features[0] && data.features[0].properties) {
+          var durationSeconds = data.features[0].properties.summary.duration;
+          var durationMinutes = Math.round(durationSeconds / 60);
+          
+          routingState.lastRoutedLat = lat;
+          routingState.lastRoutedLng = lng;
+          routingState.lastDuration = durationMinutes;
+          
+          console.log("ORS route: " + durationMinutes + " min");
+          sendRouteDurationToWatch(durationMinutes, stationCode, routingState.atStation);
+        }
+      } catch (e) {
+        console.log("ORS parse error: " + e);
+      }
+    } else {
+      console.log("ORS HTTP " + xhr.status);
+    }
+  };
+  
+  xhr.onerror = function() {
+    routingState.routeInFlight = false;
+    console.log("ORS network error");
+  };
+  
+  xhr.ontimeout = function() {
+    routingState.routeInFlight = false;
+    console.log("ORS timeout");
+  };
+  
+  xhr.send();
+}
+
+function requestRoute(lat, lng, stationCode, mode) {
+  if (routingState.routeInFlight) {
+    console.log("Route already in flight");
+    return;
+  }
+  
+  // Check if at station
+  var nowAtStation = checkAtStation(lat, lng, stationCode);
+  routingState.atStation = nowAtStation;
+  
+  if (nowAtStation) {
+    console.log("At station - no routing");
+    sendRouteDurationToWatch(0, stationCode, true);
+    return;
+  }
+  
+  // Check if moved enough to re-route
+  if (routingState.lastRoutedLat !== null && routingState.lastRoutedLng !== null) {
+    var displacement = distanceMeters(lat, lng, routingState.lastRoutedLat, routingState.lastRoutedLng);
+    if (displacement < ROUTE_DISPLACEMENT_THRESHOLD) {
+      console.log("Not moved enough (" + Math.round(displacement) + "m) - keep last duration");
+      return;
+    }
+    console.log("Moved " + Math.round(displacement) + "m - re-routing");
+  }
+  
+  routingState.routeInFlight = true;
+  requestOpenRouteService(lat, lng, stationCode, mode);
+}
 
 Pebble.addEventListener("ready", function(e) {
   console.log("PebbleKit JS ready!");
@@ -128,6 +323,20 @@ Pebble.addEventListener("appmessage", function(e) {
 
   if (e.payload.REQUEST_PIN) {
     pinToTimeline(e.payload);
+  }
+  
+  if (e.payload.REQUEST_ROUTE) {
+    if (e.payload.GPS_LAT && e.payload.GPS_LNG && e.payload.START_STATION_CODE) {
+      var lat = e.payload.GPS_LAT / 1000000.0;
+      var lng = e.payload.GPS_LNG / 1000000.0;
+      var stationCode = e.payload.START_STATION_CODE;
+      var mode = e.payload.ROUTE_MODE || 0;
+      requestRoute(lat, lng, stationCode, mode);
+    }
+  }
+  
+  if (e.payload.SETTINGS_VERVOER !== undefined) {
+    setRouteMode(e.payload.SETTINGS_VERVOER);
   }
 });
 
@@ -166,8 +375,9 @@ function locationError(err) {
   console.log("Location error: " + err.message);
   console.log("Error code: " + err.code);
   
+  // Send empty station list to trigger fallback to manual selection
   Pebble.sendAppMessage({
-    "ERROR": 1
+    "STATION_COUNT": 0
   });
 }
 
@@ -238,7 +448,7 @@ function processStationData(data) {
 
 function sendRequest(url, sendToWatchFunction){
   var xhr = new XMLHttpRequest();
-  xhr.timeout = 2000;
+  xhr.timeout = 8000;
 
   xhr.open("GET", url, true); // The "true" argument makes it asynchronous.
   
