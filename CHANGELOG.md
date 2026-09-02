@@ -5,6 +5,12 @@ All notable changes to the Trein Pebble app will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.1] - 02-09-2026
+
+### Fixed
+
+- Phone settings page now loads as HTML via GitHub Pages. jsDelivr and GitHub raw both serve `config.html` as `text/plain`, which Core Devices WebView shows as source.
+
 ## [1.7.0] - 18-05-2026
 
 ### Added

@@ -167,7 +167,7 @@ function sendFavouritesToWatch() {
 }
 
 Pebble.addEventListener("showConfiguration", function(e) {
-  var url = "https://cdn.jsdelivr.net/gh/SBerkers/trein-pebble@main/config.html";
+  var url = "https://sberkers.github.io/trein-pebble/config.html";
   var currentKey = getApiKey();
   var favourites = getFavourites();
   var ors = getOrsKey();

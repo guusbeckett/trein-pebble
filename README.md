@@ -112,7 +112,8 @@ The countdown screen shows two timers:
 
 **Phone config page** (if you create your own):
 - The app expects config parameters: `api_key`, `routing_api_key`, `station_offsets`, `favourites`
-- Default config URL: `https://guusbeckett.github.io/config.html` (original)
+- Config URL (this fork): `https://sberkers.github.io/trein-pebble/config.html` (GitHub Pages, `text/html`)
+- Original config URL: `https://guusbeckett.github.io/config.html`
 - For testing, you can set values directly in localStorage via browser console
 
 ## Development
