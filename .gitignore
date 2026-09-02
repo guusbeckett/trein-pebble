@@ -2,3 +2,6 @@ build/*
 .lock-waf*
 .DS_Store
 *.sublime-*
+
+# local emulator NS key — never commit or ship in pbw
+ns_api_key

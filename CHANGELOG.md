@@ -5,6 +5,21 @@ All notable changes to the Trein Pebble app will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.2] - 02-09-2026
+
+### Added
+
+- Instant "ritten laden" screen after choosing a destination (station bars + spinner) so the watch responds before NS returns.
+
+### Changed
+
+- OpenRouteService directions now use `api.heigit.org/openrouteservice` (the old `api.openrouteservice.org` host is deprecated).
+
+### Fixed
+
+- Phone settings is a light form (favourites and station offsets as rows, not JSON textareas). Dark WebView no longer hides labels.
+- Selecting a destination no longer crashes: `STATION_OFFSET` is not treated as a trip failure, route ticks do not double-fetch trips, and AppMessage strings are never NULL.
+
 ## [1.7.1] - 02-09-2026
 
 ### Fixed

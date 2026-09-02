@@ -3,32 +3,45 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
   <title>Trein (Stef) settings</title>
   <style>
-    body { font-family: sans-serif; margin: 16px; }
-    label { display: block; margin-top: 12px; font-weight: 600; }
-    input, textarea { width: 100%; box-sizing: border-box; margin-top: 4px; }
-    textarea { min-height: 80px; font-family: monospace; }
-    button { margin-top: 16px; padding: 10px 16px; font-size: 16px; }
-    p { color: #444; font-size: 14px; }
+    html, body { background:#f4f4f4; color:#111; color-scheme: light; }
+    body { font-family: sans-serif; margin: 16px; max-width: 480px; }
+    h1 { font-size: 22px; margin: 0 0 8px; }
+    p.hint { color: #333; font-size: 14px; line-height: 1.4; margin: 0 0 16px; }
+    label.field { display: block; margin-top: 14px; font-weight: 600; color: #111; }
+    input[type="text"], input[type="password"], input[type="number"] {
+      width: 100%; box-sizing: border-box; margin-top: 4px;
+      background: #fff; color: #111; border: 1px solid #bbb;
+      padding: 8px; font-size: 16px;
+    }
+    .row { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+    .row input { margin-top: 0; }
+    .row .code { flex: 0 0 72px; }
+    .row .name, .row .mins { flex: 1; }
+    .row button { flex: 0 0 auto; margin-top: 0; padding: 8px 10px; font-size: 14px; }
+    h2 { font-size: 16px; margin: 22px 0 4px; }
+    button.add { margin-top: 8px; padding: 8px 12px; font-size: 14px; }
+    button#save { margin-top: 20px; padding: 10px 16px; font-size: 16px; width: 100%; }
   </style>
 </head>
 <body>
   <h1>Trein (Stef)</h1>
-  <p>NS key is required. OpenRouteService is optional: without it VERTREK still works and OVER waits.</p>
-  <label>NS API key
-    <input id="api_key" type="text" autocomplete="off">
+  <p class="hint">NS key is required. OpenRouteService is optional: VERTREK works without it; OVER stays &hellip; until a walk/bike time is available.</p>
+  <label class="field">NS API key
+    <input id="api_key" type="password" autocomplete="off">
   </label>
-  <label>OpenRouteService API key
-    <input id="routing_api_key" type="text" autocomplete="off">
+  <label class="field">OpenRouteService API key
+    <input id="routing_api_key" type="password" autocomplete="off">
   </label>
-  <label>Station offsets JSON (station_code to extra minutes)
-    <textarea id="station_offsets" placeholder='{"Ut": 2, "Asd": 1}'></textarea>
-  </label>
-  <label>Favourites JSON
-    <textarea id="favourites" placeholder='[{"code":"Ut","name":"Utrecht C"}]'></textarea>
-  </label>
-  <button id="save">Save</button>
+  <h2>Favourites</h2>
+  <div id="fav-list"></div>
+  <button type="button" class="add" id="fav-add">Add favourite</button>
+  <h2>Station offsets (minutes)</h2>
+  <div id="off-list"></div>
+  <button type="button" class="add" id="off-add">Add offset</button>
+  <button type="button" id="save">Save</button>
   <script>
     function qp(name) {
       var q = location.search.substring(1).split("&");
@@ -38,20 +51,80 @@
       }
       return "";
     }
+    function parseJson(s, fallback) {
+      if (!s) return fallback;
+      try { return JSON.parse(s); } catch (e) { return fallback; }
+    }
+    function addFavRow(code, name) {
+      var list = document.getElementById("fav-list");
+      var row = document.createElement("div");
+      row.className = "row";
+      var c = document.createElement("input");
+      c.type = "text"; c.className = "code"; c.placeholder = "Code"; c.value = code || "";
+      var n = document.createElement("input");
+      n.type = "text"; n.className = "name"; n.placeholder = "Name"; n.value = name || "";
+      var rm = document.createElement("button");
+      rm.type = "button"; rm.textContent = "Remove";
+      rm.onclick = function() { list.removeChild(row); };
+      row.appendChild(c); row.appendChild(n); row.appendChild(rm);
+      list.appendChild(row);
+    }
+    function addOffRow(code, minutes) {
+      var list = document.getElementById("off-list");
+      var row = document.createElement("div");
+      row.className = "row";
+      var c = document.createElement("input");
+      c.type = "text"; c.className = "code"; c.placeholder = "Code"; c.value = code || "";
+      var m = document.createElement("input");
+      m.type = "number"; m.className = "mins"; m.placeholder = "Minutes"; m.value = minutes == null ? "" : String(minutes);
+      var rm = document.createElement("button");
+      rm.type = "button"; rm.textContent = "Remove";
+      rm.onclick = function() { list.removeChild(row); };
+      row.appendChild(c); row.appendChild(m); row.appendChild(rm);
+      list.appendChild(row);
+    }
     document.getElementById("api_key").value = qp("api_key");
     document.getElementById("routing_api_key").value = qp("routing_api_key");
-    document.getElementById("station_offsets").value = qp("station_offsets") || "{}";
-    document.getElementById("favourites").value = qp("favourites") || "[]";
+    var favs = parseJson(qp("favourites"), []);
+    if (!(favs instanceof Array)) favs = [];
+    if (favs.length === 0) addFavRow("", "");
+    else {
+      for (var i = 0; i < favs.length; i++) {
+        addFavRow(favs[i] && favs[i].code, favs[i] && favs[i].name);
+      }
+    }
+    var offs = parseJson(qp("station_offsets"), {});
+    if (!offs || typeof offs !== "object" || offs instanceof Array) offs = {};
+    var offKeys = [];
+    for (var k in offs) { if (Object.prototype.hasOwnProperty.call(offs, k)) offKeys.push(k); }
+    if (offKeys.length === 0) addOffRow("", "");
+    else {
+      for (var j = 0; j < offKeys.length; j++) addOffRow(offKeys[j], offs[offKeys[j]]);
+    }
+    document.getElementById("fav-add").onclick = function() { addFavRow("", ""); };
+    document.getElementById("off-add").onclick = function() { addOffRow("", ""); };
     document.getElementById("save").onclick = function() {
-      var offsets = document.getElementById("station_offsets").value || "{}";
-      try { JSON.parse(offsets); } catch (e) { alert("Station offsets must be JSON"); return; }
-      var favs = document.getElementById("favourites").value || "[]";
-      var favourites;
-      try { favourites = JSON.parse(favs); } catch (e) { alert("Favourites must be JSON"); return; }
+      var favourites = [];
+      var favRows = document.getElementById("fav-list").children;
+      for (var i = 0; i < favRows.length; i++) {
+        var code = favRows[i].querySelector(".code").value.replace(/^\s+|\s+$/g, "");
+        var name = favRows[i].querySelector(".name").value.replace(/^\s+|\s+$/g, "");
+        if (code || name) favourites.push({ code: code, name: name });
+      }
+      var station_offsets = {};
+      var offRows = document.getElementById("off-list").children;
+      for (var j = 0; j < offRows.length; j++) {
+        var oc = offRows[j].querySelector(".code").value.replace(/^\s+|\s+$/g, "");
+        var om = offRows[j].querySelector(".mins").value;
+        if (!oc) continue;
+        var mins = parseInt(om, 10);
+        if (isNaN(mins)) mins = 0;
+        station_offsets[oc] = mins;
+      }
       var result = {
         api_key: document.getElementById("api_key").value,
         routing_api_key: document.getElementById("routing_api_key").value,
-        station_offsets: offsets,
+        station_offsets: station_offsets,
         favourites: favourites
       };
       document.location = "pebblejs://close#" + encodeURIComponent(JSON.stringify(result));

@@ -26,6 +26,11 @@ static void prv_alpha_menu_window_load(Window *window);
 static void prv_alpha_menu_window_unload(Window *window);
 static void prv_countdown_window_load(Window *window);
 static void prv_countdown_window_unload(Window *window);
+static void prv_trips_loading_window_load(Window *window);
+static void prv_trips_loading_window_unload(Window *window);
+static void prv_push_trips_loading(void);
+static void prv_dismiss_trips_loading(void);
+static void prv_loading_fail_timeout(void *data);
 static void prv_countdown_click_config_provider(void *context);
 static void prv_update_countdown_display();
 static void prv_settings_window_load(Window *window);
@@ -186,9 +191,19 @@ static void prv_spinner_layer_update_proc(Layer *layer, GContext *ctx) {
 // Spinner animation timer callback
 static void prv_spinner_timer_callback(void *data) {
   s_app.state.spinner_angle = (s_app.state.spinner_angle + 6) % 360;
+  bool keep = false;
   if (s_app.main_ui.spinner_layer) {
     layer_mark_dirty(s_app.main_ui.spinner_layer);
+    keep = true;
+  }
+  if (s_app.loading_ui.spinner_layer) {
+    layer_mark_dirty(s_app.loading_ui.spinner_layer);
+    keep = true;
+  }
+  if (keep) {
     s_app.state.spinner_timer = app_timer_register(50, prv_spinner_timer_callback, NULL);
+  } else {
+    s_app.state.spinner_timer = NULL;
   }
 }
 
@@ -265,6 +280,9 @@ static void prv_apply_station_choice(const char *code, const char *name) {
   s_app.journey.dest_station_code[sizeof(s_app.journey.dest_station_code) - 1] = '\0';
   strncpy(s_app.journey.dest_station_name, name, sizeof(s_app.journey.dest_station_name) - 1);
   s_app.journey.dest_station_name[sizeof(s_app.journey.dest_station_name) - 1] = '\0';
+  s_app.trips.loaded = false;
+  s_app.trips.count = 0;
+  prv_push_trips_loading();
   prv_send_trip_request();
 }
 
@@ -317,6 +335,14 @@ static GFont prv_over_time_font(bool negative) {
 static void prv_countdown_timer_callback(void *data) {
   time_t now = time(NULL);
   int idx = s_app.journey.selected_trip_index;
+  if (idx < 0) idx = 0;
+  if (s_app.trips.count > 0 && idx >= s_app.trips.count) idx = s_app.trips.count - 1;
+  if (idx >= MAX_TRIPS) idx = MAX_TRIPS - 1;
+  s_app.journey.selected_trip_index = idx;
+  if (!s_app.countdown_ui.over_time_layer || !s_app.countdown_ui.over_label_layer ||
+      !s_app.countdown_ui.vertrek_time_layer || !s_app.countdown_ui.vertrek_label_layer) {
+    return;
+  }
   int dep_remain = (int)(s_app.state.departure_time - now);
   bool cancelled = (strncmp(s_app.trips.delay[idx], "Cancelled", 9) == 0);
   bool hero_vertrek = s_app.routing.at_station ||
@@ -415,7 +441,9 @@ static void prv_parse_time_and_start_timer() {
     s_app.state.countdown_timer = NULL;
   }
   if (s_app.trips.count == 0 || s_app.trips.departures[s_app.journey.selected_trip_index] == 0) {
-    text_layer_set_text(s_app.countdown_ui.vertrek_time_layer, "--:--");
+    if (s_app.countdown_ui.vertrek_time_layer) {
+      text_layer_set_text(s_app.countdown_ui.vertrek_time_layer, "--:--");
+    }
     return;
   }
   s_app.state.departure_time = s_app.trips.departures[s_app.journey.selected_trip_index];
@@ -857,7 +885,10 @@ static void prv_dest_menu_window_load(Window *window) {
   layer_add_child(window_layer, menu_layer_get_layer(s_app.menu_layers.dest_menu_layer));
 }
 
-static void prv_dest_menu_window_unload(Window *window) { menu_layer_destroy(s_app.menu_layers.dest_menu_layer); }
+static void prv_dest_menu_window_unload(Window *window) {
+  menu_layer_destroy(s_app.menu_layers.dest_menu_layer);
+  s_app.menu_layers.dest_menu_layer = NULL;
+}
 
 static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) {
   Tuple *station_index_tuple = dict_find(iter, MESSAGE_KEY_STATION_INDEX);
@@ -891,6 +922,7 @@ static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) 
   Tuple *pin_status_tuple = dict_find(iter, MESSAGE_KEY_PIN_STATUS);
   Tuple *route_duration_tuple = dict_find(iter, MESSAGE_KEY_ROUTE_DURATION);
   Tuple *station_offset_tuple = dict_find(iter, MESSAGE_KEY_STATION_OFFSET);
+  Tuple *trips_failed_tuple = dict_find(iter, MESSAGE_KEY_TRIPS_FAILED);
   Tuple *settings_tijd_tuple = dict_find(iter, MESSAGE_KEY_SETTINGS_TIJD_MODE);
   Tuple *settings_reistijd_tuple = dict_find(iter, MESSAGE_KEY_SETTINGS_REISTIJD);
   Tuple *settings_vervoer_tuple = dict_find(iter, MESSAGE_KEY_SETTINGS_VERVOER);
@@ -900,7 +932,13 @@ static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) 
     if (s_app.trips.loaded) {
       return;
     }
-    text_layer_set_text(s_app.main_ui.text_layer, "Add API key in settings...");
+    if (s_app.loading_ui.status_layer) {
+      text_layer_set_text(s_app.loading_ui.status_layer, "geen ritten");
+      if (s_app.state.loading_fail_timer) app_timer_cancel(s_app.state.loading_fail_timer);
+      s_app.state.loading_fail_timer = app_timer_register(1500, prv_loading_fail_timeout, NULL);
+    } else if (s_app.main_ui.text_layer) {
+      text_layer_set_text(s_app.main_ui.text_layer, "Add API key in settings...");
+    }
     return;
   }
 
@@ -992,6 +1030,7 @@ static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) 
         } else if (s_app.countdown_ui.vertrek_time_layer) {
           prv_update_countdown_display();
         }
+        prv_dismiss_trips_loading();
       }
     }
   }
@@ -1080,12 +1119,17 @@ static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) 
   if (station_offset_tuple) {
     s_app.routing.station_offset_min = (int)station_offset_tuple->value->int32;
     s_app.state.refresh_in_flight = false;
+  }
+  if (trips_failed_tuple) {
+    s_app.state.refresh_in_flight = false;
     if (!s_app.trips.loaded) {
-      if (s_app.state.spinner_timer) {
-        app_timer_cancel(s_app.state.spinner_timer);
-        s_app.state.spinner_timer = NULL;
+      if (s_app.loading_ui.status_layer) {
+        text_layer_set_text(s_app.loading_ui.status_layer, "geen ritten");
       }
-      prv_push_dest_menu();
+      if (s_app.state.loading_fail_timer) {
+        app_timer_cancel(s_app.state.loading_fail_timer);
+      }
+      s_app.state.loading_fail_timer = app_timer_register(1500, prv_loading_fail_timeout, NULL);
     }
   }
   if (route_duration_tuple) {
@@ -1242,7 +1286,7 @@ static void prv_init(void) {
   app_message_register_inbox_dropped(prv_inbox_dropped_handler);
   app_message_register_outbox_failed(prv_outbox_failed_handler);
   app_message_register_outbox_sent(prv_outbox_sent_handler);
-  app_message_open(256, 256);
+  app_message_open(512, 512);
   s_app.windows.main_window = window_create();
   window_set_click_config_provider(s_app.windows.main_window, prv_click_config_provider);
   window_set_window_handlers(s_app.windows.main_window, (WindowHandlers) { .load = prv_window_load, .unload = prv_window_unload, });
@@ -1256,9 +1300,127 @@ static void prv_deinit(void) {
   if(s_app.windows.dest_menu_window) window_destroy(s_app.windows.dest_menu_window);
   if(s_app.windows.alpha_menu_window) window_destroy(s_app.windows.alpha_menu_window);
   if(s_app.windows.countdown_window) window_destroy(s_app.windows.countdown_window);
+  if(s_app.windows.trips_loading_window) window_destroy(s_app.windows.trips_loading_window);
   if(s_app.windows.journey_details_window) window_destroy(s_app.windows.journey_details_window);
   if(s_app.windows.settings_window) window_destroy(s_app.windows.settings_window);
   window_destroy(s_app.windows.main_window);
+}
+
+
+static void prv_loading_fail_timeout(void *data) {
+  s_app.state.loading_fail_timer = NULL;
+  prv_dismiss_trips_loading();
+}
+
+static void prv_trips_loading_window_load(Window *window) {
+  Layer *window_layer = window_get_root_layer(window);
+  GRect bounds = layer_get_bounds(window_layer);
+  const int bar_height = 40;
+#ifdef PBL_COLOR
+  s_app.loading_ui.bg_blue_layer = layer_create(GRect(0, 0, bounds.size.w, bar_height));
+  layer_set_update_proc(s_app.loading_ui.bg_blue_layer, prv_bg_blue_update_proc);
+  layer_add_child(window_layer, s_app.loading_ui.bg_blue_layer);
+  s_app.loading_ui.bg_blue_bottom_layer = layer_create(GRect(0, bounds.size.h - bar_height, bounds.size.w, bar_height));
+  layer_set_update_proc(s_app.loading_ui.bg_blue_bottom_layer, prv_bg_blue_update_proc);
+  layer_add_child(window_layer, s_app.loading_ui.bg_blue_bottom_layer);
+  s_mid_band_color = GColorYellow;
+  s_app.loading_ui.bg_yellow_layer = layer_create(GRect(0, bar_height, bounds.size.w, bounds.size.h - (bar_height * 2)));
+  layer_set_update_proc(s_app.loading_ui.bg_yellow_layer, prv_bg_yellow_update_proc);
+  layer_add_child(window_layer, s_app.loading_ui.bg_yellow_layer);
+#else
+  s_app.loading_ui.bg_blue_layer = layer_create(GRect(0, 0, bounds.size.w, bar_height));
+  layer_set_update_proc(s_app.loading_ui.bg_blue_layer, prv_bg_black_update_proc);
+  layer_add_child(window_layer, s_app.loading_ui.bg_blue_layer);
+  s_app.loading_ui.bg_blue_bottom_layer = layer_create(GRect(0, bounds.size.h - bar_height, bounds.size.w, bar_height));
+  layer_set_update_proc(s_app.loading_ui.bg_blue_bottom_layer, prv_bg_black_update_proc);
+  layer_add_child(window_layer, s_app.loading_ui.bg_blue_bottom_layer);
+#endif
+
+  s_app.loading_ui.clock_layer = text_layer_create(GRect(0, 0, bounds.size.w, 16));
+  text_layer_set_font(s_app.loading_ui.clock_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14));
+  text_layer_set_text_alignment(s_app.loading_ui.clock_layer, GTextAlignmentCenter);
+  text_layer_set_background_color(s_app.loading_ui.clock_layer, GColorClear);
+  text_layer_set_text_color(s_app.loading_ui.clock_layer, GColorWhite);
+  time_t now = time(NULL);
+  strftime(s_app.buffers.clock_buffer, sizeof(s_app.buffers.clock_buffer), "%H:%M", localtime(&now));
+  text_layer_set_text(s_app.loading_ui.clock_layer, s_app.buffers.clock_buffer);
+  layer_add_child(window_layer, text_layer_get_layer(s_app.loading_ui.clock_layer));
+
+  s_app.loading_ui.start_layer = text_layer_create(GRect(2, 12, bounds.size.w - 4, 28));
+  text_layer_set_font(s_app.loading_ui.start_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+  text_layer_set_text_alignment(s_app.loading_ui.start_layer, GTextAlignmentCenter);
+  text_layer_set_background_color(s_app.loading_ui.start_layer, GColorClear);
+  text_layer_set_text_color(s_app.loading_ui.start_layer, GColorWhite);
+  text_layer_set_text(s_app.loading_ui.start_layer, s_app.journey.start_station_name);
+  layer_add_child(window_layer, text_layer_get_layer(s_app.loading_ui.start_layer));
+
+  s_app.loading_ui.dest_layer = text_layer_create(GRect(2, bounds.size.h - bar_height + 6, bounds.size.w - 4, 28));
+  text_layer_set_font(s_app.loading_ui.dest_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+  text_layer_set_text_alignment(s_app.loading_ui.dest_layer, GTextAlignmentCenter);
+  text_layer_set_background_color(s_app.loading_ui.dest_layer, GColorClear);
+  text_layer_set_text_color(s_app.loading_ui.dest_layer, GColorWhite);
+  text_layer_set_text(s_app.loading_ui.dest_layer, s_app.journey.dest_station_name);
+  layer_add_child(window_layer, text_layer_get_layer(s_app.loading_ui.dest_layer));
+
+  int spinner_size = 72;
+  int spinner_y = bar_height + ((bounds.size.h - (bar_height * 2)) / 2) - (spinner_size / 2) - 8;
+  s_app.loading_ui.spinner_layer = layer_create(GRect((bounds.size.w - spinner_size) / 2, spinner_y, spinner_size, spinner_size));
+  layer_set_update_proc(s_app.loading_ui.spinner_layer, prv_spinner_layer_update_proc);
+  layer_add_child(window_layer, s_app.loading_ui.spinner_layer);
+
+  s_app.loading_ui.status_layer = text_layer_create(GRect(0, spinner_y + spinner_size - 4, bounds.size.w, 22));
+  text_layer_set_font(s_app.loading_ui.status_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18));
+  text_layer_set_text_alignment(s_app.loading_ui.status_layer, GTextAlignmentCenter);
+  text_layer_set_background_color(s_app.loading_ui.status_layer, GColorClear);
+  text_layer_set_text_color(s_app.loading_ui.status_layer, GColorBlack);
+  text_layer_set_text(s_app.loading_ui.status_layer, "ritten laden");
+  layer_add_child(window_layer, text_layer_get_layer(s_app.loading_ui.status_layer));
+
+  if (!s_app.state.spinner_timer) {
+    s_app.state.spinner_angle = 0;
+    s_app.state.spinner_timer = app_timer_register(50, prv_spinner_timer_callback, NULL);
+  }
+}
+
+static void prv_trips_loading_window_unload(Window *window) {
+  if (s_app.state.loading_fail_timer) {
+    app_timer_cancel(s_app.state.loading_fail_timer);
+    s_app.state.loading_fail_timer = NULL;
+  }
+  if (s_app.loading_ui.clock_layer) text_layer_destroy(s_app.loading_ui.clock_layer);
+  if (s_app.loading_ui.start_layer) text_layer_destroy(s_app.loading_ui.start_layer);
+  if (s_app.loading_ui.dest_layer) text_layer_destroy(s_app.loading_ui.dest_layer);
+  if (s_app.loading_ui.status_layer) text_layer_destroy(s_app.loading_ui.status_layer);
+  if (s_app.loading_ui.spinner_layer) layer_destroy(s_app.loading_ui.spinner_layer);
+  if (s_app.loading_ui.bg_blue_layer) layer_destroy(s_app.loading_ui.bg_blue_layer);
+  if (s_app.loading_ui.bg_blue_bottom_layer) layer_destroy(s_app.loading_ui.bg_blue_bottom_layer);
+#ifdef PBL_COLOR
+  if (s_app.loading_ui.bg_yellow_layer) layer_destroy(s_app.loading_ui.bg_yellow_layer);
+#endif
+  memset(&s_app.loading_ui, 0, sizeof(s_app.loading_ui));
+}
+
+static void prv_push_trips_loading(void) {
+  if (!s_app.windows.trips_loading_window) {
+    s_app.windows.trips_loading_window = window_create();
+    window_set_window_handlers(s_app.windows.trips_loading_window, (WindowHandlers) {
+      .load = prv_trips_loading_window_load, .unload = prv_trips_loading_window_unload,
+    });
+  }
+  if (!window_stack_contains_window(s_app.windows.trips_loading_window)) {
+    window_stack_push(s_app.windows.trips_loading_window, true);
+  }
+}
+
+static void prv_dismiss_trips_loading(void) {
+  if (s_app.state.loading_fail_timer) {
+    app_timer_cancel(s_app.state.loading_fail_timer);
+    s_app.state.loading_fail_timer = NULL;
+  }
+  if (s_app.windows.trips_loading_window &&
+      window_stack_contains_window(s_app.windows.trips_loading_window)) {
+    window_stack_remove(s_app.windows.trips_loading_window, false);
+  }
 }
 
 static void prv_send_trip_request(void) {

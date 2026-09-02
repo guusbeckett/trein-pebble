@@ -60,6 +60,7 @@ typedef struct {
   Window *dest_menu_window;
   Window *alpha_menu_window;
   Window *countdown_window;
+  Window *trips_loading_window;
   Window *journey_details_window;
   Window *pin_menu_window;
   Window *settings_window;
@@ -82,6 +83,20 @@ typedef struct {
   Layer *bg_yellow_layer;
   #endif
 } MainWindowUI;
+
+// Slim dest-select loading chrome (bars + spinner, not full countdown)
+typedef struct {
+  TextLayer *clock_layer;
+  TextLayer *start_layer;
+  TextLayer *dest_layer;
+  TextLayer *status_layer;
+  Layer *spinner_layer;
+  Layer *bg_blue_layer;
+  Layer *bg_blue_bottom_layer;
+  #ifdef PBL_COLOR
+  Layer *bg_yellow_layer;
+  #endif
+} TripsLoadingUI;
 
 // Countdown Window UI Components
 typedef struct {
@@ -213,6 +228,7 @@ typedef struct {
   bool refresh_in_flight;
   time_t last_button_time;
   bool selecting_start_station;
+  AppTimer *loading_fail_timer;
 } AppState;
 
 // --- Global App Data Instance ---
@@ -220,6 +236,7 @@ typedef struct {
   AppWindows windows;
   AppMenuLayers menu_layers;
   MainWindowUI main_ui;
+  TripsLoadingUI loading_ui;
   CountdownWindowUI countdown_ui;
   JourneyDetailsUI journey_details_ui;
   DisplayBuffers buffers;

@@ -2,7 +2,7 @@
   "name": "Trein",
   "author": "Guus H. Beckett",
   "description": "A Pebble watchapp that shows a countdown to your next train, train times and platforms",
-  "version": "1.7.1",
+  "version": "1.7.2",
   "keywords": [
     "pebble-app",
     "pebble",
@@ -79,6 +79,7 @@
       "ROUTE_DURATION",
       "ROUTE_MODE",
       "STATION_OFFSET",
+      "TRIPS_FAILED",
       "SETTINGS_TIJD_MODE",
       "SETTINGS_REISTIJD",
       "SETTINGS_VERVOER"

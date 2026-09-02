@@ -19,6 +19,23 @@ var BASE_API_URL = "https://gateway.apiportal.ns.nl";
 var NEAREST_STATIONS_PATH = "/nsapp-stations/v2/nearest";
 var TRIP_PATH = "/reisinformatie-api/api/v3/trips";
 
+function asStr(v, fallback) {
+  if (v == null) return fallback;
+  return String(v);
+}
+
+function loadEmulatorDefaultKey() {
+  if (typeof Pebble === "undefined" || Pebble.platform !== "pypkjs") return;
+  if (DEFAULT_API_KEY) return;
+  try {
+    var xhr = new XMLHttpRequest();
+    xhr.open("GET", "file:///home/box/.config/trein/ns_api_key", false);
+    xhr.send(null);
+    var body = xhr.responseText ? String(xhr.responseText).replace(/^\s+|\s+$/g, "") : "";
+    if (body) DEFAULT_API_KEY = body;
+  } catch (e) {}
+}
+
 function getApiKey() {
   try {
     var key = localStorage.getItem("api_key");
@@ -28,6 +45,7 @@ function getApiKey() {
   } catch (e) {
     console.log("Error reading from localStorage: " + e);
   }
+  loadEmulatorDefaultKey();
   return DEFAULT_API_KEY;
 }
 
@@ -84,7 +102,7 @@ function fetchOrsDuration(lat, lng, dest, profile, callback) {
   orsInFlight = true;
   var xhr = new XMLHttpRequest();
   xhr.timeout = 8000;
-  xhr.open("GET", "https://api.openrouteservice.org/v2/directions/" + profile +
+  xhr.open("GET", "https://api.heigit.org/openrouteservice/v2/directions/" + profile +
     "?api_key=" + encodeURIComponent(key) + "&start=" + lng + "," + lat + "&end=" + dest.lng + "," + dest.lat, true);
   xhr.onload = function() {
     orsInFlight = false;
@@ -106,7 +124,7 @@ function fetchOrsDuration(lat, lng, dest, profile, callback) {
 function handleRouteTick(vervoer) {
   var doGps = function(pos) {
     var lat = pos.coords.latitude, lng = pos.coords.longitude;
-    if (lastStartCode && lastDestCode) requestTrips(lastStartCode, lastDestCode);
+    if (tripsSentOnce && lastStartCode && lastDestCode) requestTrips(lastStartCode, lastDestCode);
     var dest = stationCoords[lastStartCode];
     if (!dest) { routeTickMissedDest = true; sendRouteToWatch(null, false); return; }
     routeTickMissedDest = false;
@@ -120,7 +138,7 @@ function handleRouteTick(vervoer) {
     });
   };
   var onErr = function() {
-    if (lastStartCode && lastDestCode) requestTrips(lastStartCode, lastDestCode);
+    if (tripsSentOnce && lastStartCode && lastDestCode) requestTrips(lastStartCode, lastDestCode);
     if (!stationCoords[lastStartCode]) routeTickMissedDest = true;
     sendRouteToWatch(cachedDurationMin, false);
   };
@@ -149,8 +167,8 @@ function sendFavouritesToWatch() {
 
     Pebble.sendAppMessage({
       "FAVOURITE_INDEX": currentIndex,
-      "FAVOURITE_CODE": fav.code,
-      "FAVOURITE_NAME": fav.name,
+      "FAVOURITE_CODE": asStr(fav && fav.code, ""),
+      "FAVOURITE_NAME": asStr(fav && fav.name, ""),
       "FAVOURITE_COUNT": favourites.length
     }, function() {
       console.log("Favourite sent: " + fav.name);
@@ -208,6 +226,7 @@ Pebble.addEventListener("webviewclosed", function(e) {
 
 Pebble.addEventListener("ready", function(e) {
   console.log("PebbleKit JS ready!");
+  loadEmulatorDefaultKey();
   sendFavouritesToWatch();
   requestLocationAndFetchStations();
 });
@@ -280,9 +299,9 @@ function convertIsoDateToEpoch(apiDateString) {
     return 0;
   }
 
-  let compliantString = apiDateString.slice(0, -2) + ":" + apiDateString.slice(-2);
+  var compliantString = apiDateString.slice(0, -2) + ":" + apiDateString.slice(-2);
   
-  let dateObject = new Date(compliantString);
+  var dateObject = new Date(compliantString);
   
   if (isNaN(dateObject)) {
     return 0;
@@ -322,8 +341,8 @@ function processStationData(data) {
 
     Pebble.sendAppMessage({
       "STATION_INDEX": currentIndex,
-      "STATION_CODE": stationCode,
-      "STATION_NAME": stationName,
+      "STATION_CODE": asStr(stationCode, ""),
+      "STATION_NAME": asStr(stationName, "?"),
       "STATION_COUNT": nearbyStations.length
     }, function() {
       console.log("Message sent successfully");
@@ -347,7 +366,7 @@ function reportNsFailure(kind, status) {
       Pebble.sendAppMessage({ "ERROR": 1 });
       return;
     }
-    Pebble.sendAppMessage({ "STATION_OFFSET": offsetForCode(lastStartCode) });
+    Pebble.sendAppMessage({ "TRIPS_FAILED": 1 });
     return;
   }
   if (missingKey) {
@@ -483,12 +502,12 @@ function sendLegData(trips) {
       "LEG_TRIP_INDEX": leg.tripIndex,
       "LEG_INDEX": leg.legIndex,
       "LEG_COUNT": leg.legCount,
-      "LEG_DEPARTURE_STATION": leg.departureStation,
-      "LEG_DEPARTURE_PLATFORM": leg.departurePlatform,
-      "LEG_DEPARTURE_TIME": leg.departureTime,
-      "LEG_ARRIVAL_STATION": leg.arrivalStation,
-      "LEG_ARRIVAL_TIME": leg.arrivalTime,
-      "LEG_DURATION": leg.duration,
+      "LEG_DEPARTURE_STATION": asStr(leg.departureStation, "?"),
+      "LEG_DEPARTURE_PLATFORM": asStr(leg.departurePlatform, "?"),
+      "LEG_DEPARTURE_TIME": asStr(leg.departureTime, "?"),
+      "LEG_ARRIVAL_STATION": asStr(leg.arrivalStation, "?"),
+      "LEG_ARRIVAL_TIME": asStr(leg.arrivalTime, "?"),
+      "LEG_DURATION": asStr(leg.duration, "?"),
       "LEG_DEPARTURE_EPOCH": leg.depEpoch,
       "LEG_ARRIVAL_EPOCH": leg.arrEpoch
     }, function() {
@@ -619,7 +638,8 @@ function processTripData(data) {
       console.log(trips[sendIndex].legs[0].origin.actualDepartureTime);
     }
 
-    var departurePlatform = trips[sendIndex].legs[0].origin.actualTrack;
+    var origin0 = trips[sendIndex].legs[0].origin;
+    var departurePlatform = asStr(origin0.actualTrack || origin0.plannedTrack, "?");
     var tripTransfers = trips[sendIndex].transfers;
     var currentIndex = sendIndex;
     var actualDepartureTimeEpoch = convertIsoDateToEpoch(actualDepartureTime);
@@ -631,14 +651,14 @@ function processTripData(data) {
 
     Pebble.sendAppMessage({
       "TRIP_INDEX": currentIndex,
-      "TRIP_PLANNED_DEPARTURE_TIME": plannedDepartureTime,
+      "TRIP_PLANNED_DEPARTURE_TIME": asStr(plannedDepartureTime, ""),
       "TRIP_DEPARTURE_TIME_EPOCH": actualDepartureTimeEpoch,
-      "TRIP_PLANNED_ARRIVAL_TIME": plannedArrivalTime,
-      "TRIP_ARRIVAL_TIME": actualArrivalTime,
+      "TRIP_PLANNED_ARRIVAL_TIME": asStr(plannedArrivalTime, ""),
+      "TRIP_ARRIVAL_TIME": asStr(actualArrivalTime, ""),
       "TRIP_ARRIVAL_TIME_EPOCH": actualArrivalTimeEpoch,
       "TRIP_TRANSFERS": tripTransfers,
       "TRIP_PLATFORM": departurePlatform,
-      "TRIP_DELAY": tripDelay,
+      "TRIP_DELAY": asStr(tripDelay, ""),
       "TRIP_COUNT": trips.length
     }, function() {
       sendIndex++;
@@ -668,7 +688,7 @@ function requestTrips(start, destination) {
   lastStartCode = start;
   lastDestCode = destination;
   lookupStartCoords(start);
-  const date_now = new Date();
+  var date_now = new Date();
   var url = BASE_API_URL + TRIP_PATH + "?fromStation=" + start + "&toStation=" + destination + "&dateTime=" + date_now.toISOString();
   sendRequest(url, processTripData, "trips");
 }
