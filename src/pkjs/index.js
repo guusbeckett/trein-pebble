@@ -164,7 +164,7 @@ function addFavouriteFromWatch(code, name) {
   sendFavouritesToWatch();
 }
 var lastStartCode = "", lastDestCode = "", stationCoords = {}, lastRouted = null, cachedDurationMin = null, orsInFlight = false, tripsSentOnce = false, routeTickMissedDest = false;
-var lastGps = null;
+var lastGps = null, tripsInFlight = false, pendingRouteTick = null, routeAfterTrips = false;
 function haversineMeters(a, b, c, d) {
   var P = Math.PI / 180, dLat = (c - a) * P, dLon = (d - b) * P;
   var x = Math.sin(dLat / 2), y = Math.sin(dLon / 2);
@@ -179,18 +179,21 @@ function pickCoord(obj, keys) {
   return null;
 }
 function rememberStation(st) {
-  if (!st || !st.code) return;
+  if (!st) return;
+  if (st.station && typeof st.station === "object") rememberStation(st.station);
+  var code = st.code || st.stationCode || (st.payload && st.payload.code);
+  if (!code) return;
   var lat = pickCoord(st, ["lat", "latitude"]);
   var lng = pickCoord(st, ["lng", "lon", "longitude"]);
-  if (lat == null) lat = pickCoord(st.locatie, ["lat", "latitude"]) || pickCoord(st.location, ["lat", "latitude"]);
-  if (lng == null) lng = pickCoord(st.locatie, ["lng", "lon", "longitude"]) || pickCoord(st.location, ["lng", "lon", "longitude"]);
-  if ((lat == null || lng == null) && st.payload) {
+  if (lat == null) lat = pickCoord(st.locatie, ["lat", "latitude"]) || pickCoord(st.location, ["lat", "latitude"]) || pickCoord(st.coordinates, ["lat", "latitude"]);
+  if (lng == null) lng = pickCoord(st.locatie, ["lng", "lon", "longitude"]) || pickCoord(st.location, ["lng", "lon", "longitude"]) || pickCoord(st.coordinates, ["lng", "lon", "longitude"]);
+  if ((lat == null || lng == null) && st.payload && typeof st.payload === "object") {
     lat = lat != null ? lat : pickCoord(st.payload, ["lat", "latitude"]);
     lng = lng != null ? lng : pickCoord(st.payload, ["lng", "lon", "longitude"]);
   }
   if (lat != null && lng != null && !isNaN(lat) && !isNaN(lng)) {
-    stationCoords[st.code] = { lat: lat, lng: lng };
-    stationCoords[String(st.code).toUpperCase()] = { lat: lat, lng: lng };
+    stationCoords[code] = { lat: lat, lng: lng };
+    stationCoords[String(code).toUpperCase()] = { lat: lat, lng: lng };
   }
 }
 function coordsFor(code) {
@@ -231,7 +234,7 @@ function sendRouteError(code) {
   }, function() {}, function() {});
 }
 function fetchOrsDuration(lat, lng, dest, profile, callback, isRetry) {
-  var key = getOrsKey();
+  var key = trimKey(getOrsKey());
   if (!key || !dest) { callback(null, key ? 2 : 1); return; }
   if (orsInFlight && !isRetry) {
     if (cachedDurationMin != null) callback(cachedDurationMin, 0);
@@ -308,11 +311,34 @@ function runRouteFrom(lat, lng, vervoer, force) {
     else if (err) sendRouteError(err);
   });
 }
+function flushPendingRoute() {
+  tripsInFlight = false;
+  var tick = pendingRouteTick;
+  pendingRouteTick = null;
+  var need = routeAfterTrips;
+  routeAfterTrips = false;
+  if (tick) {
+    handleRouteTick(tick.vervoer, tick.force);
+    return;
+  }
+  if (need && lastStartCode && lastDestCode && parseInt(lsGet("settings_reistijd", "1"), 10) !== 0) {
+    handleRouteTick(parseInt(lsGet("settings_vervoer", "0"), 10), true);
+  }
+}
 function handleRouteTick(vervoer, force) {
-  var afterPos = function(pos) {
-    runRouteFrom(pos.coords.latitude, pos.coords.longitude, vervoer, !!force);
-  };
-  var onErr = function() {
+  if (tripsInFlight) {
+    pendingRouteTick = { vervoer: vervoer, force: !!force };
+    return;
+  }
+  function go(lat, lng) {
+    lastGps = { lat: lat, lng: lng };
+    runRouteFrom(lat, lng, vervoer, !!force);
+  }
+  function onFail(attempt) {
+    if (attempt < 1) {
+      setTimeout(function() { tryPos(attempt + 1); }, 500);
+      return;
+    }
     if (lastGps) {
       runRouteFrom(lastGps.lat, lastGps.lng, vervoer, true);
       return;
@@ -321,11 +347,20 @@ function handleRouteTick(vervoer, force) {
       routeTickMissedDest = true;
       lookupStartCoords(lastStartCode);
     }
-  };
-  if (typeof Pebble !== "undefined" && Pebble.platform === "pypkjs") {
-    afterPos({ coords: { latitude: 51.58719, longitude: 4.78322 } }); return;
   }
-  navigator.geolocation.getCurrentPosition(afterPos, onErr, { timeout: 10000, maximumAge: 15000, enableHighAccuracy: false });
+  function tryPos(attempt) {
+    if (typeof Pebble !== "undefined" && Pebble.platform === "pypkjs") {
+      var g = lastGps || { lat: 51.58719, lng: 4.78322 };
+      go(g.lat, g.lng);
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      function(pos) { go(pos.coords.latitude, pos.coords.longitude); },
+      function() { onFail(attempt); },
+      { timeout: 8000, maximumAge: 60000, enableHighAccuracy: false }
+    );
+  }
+  tryPos(0);
 }
 
 
@@ -448,8 +483,9 @@ Pebble.addEventListener("appmessage", function(e) {
     else lsSet("settings_vervoer", String(vervoer));
     var reistijd = e.payload.SETTINGS_REISTIJD;
     if (reistijd == null) reistijd = parseInt(lsGet("settings_reistijd", "1"), 10);
+    else lsSet("settings_reistijd", String(reistijd));
     if (parseInt(reistijd, 10) === 0) {
-      if (tripsSentOnce && lastStartCode && lastDestCode) requestTrips(lastStartCode, lastDestCode);
+      if (tripsSentOnce && lastStartCode && lastDestCode && !tripsInFlight) requestTrips(lastStartCode, lastDestCode);
       sendRouteToWatch(null, false);
     } else {
       handleRouteTick(vervoer, true);
@@ -489,6 +525,7 @@ function requestLocationAndFetchStations() {
 function locationSuccess(pos) {
   var lat = pos.coords.latitude;
   var lng = pos.coords.longitude;
+  lastGps = { lat: lat, lng: lng };
   fetchNearbyStations(lat, lng);
 }
 
@@ -563,6 +600,9 @@ function processStationData(data) {
 }
 
 function reportNsFailure(kind, status) {
+  if (kind === "trips") {
+    flushPendingRoute();
+  }
   if (kind === "lookup") return;
   var missingKey = !getApiKey() || status === 401 || status === 403;
   if (kind === "trips") {
@@ -719,6 +759,7 @@ function sendLegData(trips) {
 
   function sendNextLeg() {
     if (sendIndex >= legQueue.length) {
+      flushPendingRoute();
       return;
     }
 
@@ -918,6 +959,9 @@ function processTripData(data) {
 }
 
 function fetchNearbyStations(lat, lng) {
+  if (lat != null && lng != null && !isNaN(lat) && !isNaN(lng)) {
+    lastGps = { lat: lat, lng: lng };
+  }
   if (typeof Pebble !== "undefined" && Pebble.platform === "pypkjs") {
     processStationData({ payload: [
       { code: "bd", namen: { middel: "Breda" }, lat: 51.5958, lng: 4.779 },
@@ -984,10 +1028,11 @@ function emulatorInjectDelayTrip(start, destination) {
 function requestTrips(start, destination) {
   lastStartCode = start;
   lastDestCode = destination;
-  lookupStartCoords(start);
+  tripsInFlight = true;
   if (parseInt(lsGet("settings_reistijd", "1"), 10) !== 0) {
-    handleRouteTick(parseInt(lsGet("settings_vervoer", "0"), 10), true);
+    routeAfterTrips = true;
   }
+  lookupStartCoords(start);
   if (emulatorInjectDelayTrip(start, destination)) return;
   if (typeof Pebble !== "undefined" && Pebble.platform === "pypkjs" && !getApiKey()) {
     emulatorSendMockTrip(start, destination, false);

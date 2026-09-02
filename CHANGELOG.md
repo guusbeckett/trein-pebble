@@ -5,6 +5,19 @@ All notable changes to the Trein Pebble app will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.7] - 02-09-2026
+
+### Changed
+
+- Flint/Time 2 countdown chrome: current time, planned dep, and dest arrival are Gothic 18. Station names stay centered Gothic 18 Bold in the blue bars with side slots for the clock and HH:MM.
+- Cream band no longer shows `HH:MM > HH:MM`. That row is total trip duration only, centered (`1u16` / `48m`). Platform stays top-right of cream, left of the leg dots.
+
+### Fixed
+
+- OVER now gets ORS minutes on device: dest pick and countdown send REQUEST_ROUTE plus settings; JS always `handleRouteTick` after dest is known when Reistijd is on.
+- Phone GPS: retry `getCurrentPosition`, then reuse `lastGps` from the nearest-stations fix so a route can run without a second GPS lock. Start-station coords come from the nearest payload and NS lookup.
+- ORS POST is queued behind NS trip AppMessages but still sent. Key is trimmed. Authorization header (no Bearer). No haversine duration; OVER stays `...` until minutes arrive.
+
 ## [1.7.6] - 02-09-2026
 
 ### Fixed
