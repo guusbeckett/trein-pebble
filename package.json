@@ -22,7 +22,6 @@
     "sdkVersion": "3",
     "enableMultiJS": true,
     "targetPlatforms": [
-      "aplite",
       "basalt",
       "chalk",
       "diorite",
@@ -79,8 +78,6 @@
       "ROUTE_DURATION",
       "ROUTE_MODE",
       "STATION_OFFSET",
-      "GPS_LAT",
-      "GPS_LNG",
       "SETTINGS_TIJD_MODE",
       "SETTINGS_REISTIJD",
       "SETTINGS_VERVOER"

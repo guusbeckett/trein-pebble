@@ -15,24 +15,23 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 #include <pebble.h>
-#include <stdlib.h>
 #include "stations.h"
 #include "trein_data.h"
 
 // --- Function Declarations ---
 static void prv_send_trip_request();
-static void prv_send_trip_refresh();
-static void prv_refresh_timer_callback(void *data);
 static void prv_dest_menu_window_load(Window *window);
 static void prv_dest_menu_window_unload(Window *window);
 static void prv_alpha_menu_window_load(Window *window);
 static void prv_alpha_menu_window_unload(Window *window);
-static void prv_loading_window_load(Window *window);
-static void prv_loading_window_unload(Window *window);
 static void prv_countdown_window_load(Window *window);
 static void prv_countdown_window_unload(Window *window);
 static void prv_countdown_click_config_provider(void *context);
 static void prv_update_countdown_display();
+static void prv_settings_window_load(Window *window);
+static void prv_settings_window_unload(Window *window);
+static void prv_send_route_request(void);
+static void prv_send_settings_to_phone(void);
 static void prv_update_countdown_display_animated(AnimationDirection direction);
 static void prv_animation_started_handler(Animation *animation, void *context);
 static void prv_animation_stopped_handler(Animation *animation, bool finished, void *context);
@@ -44,8 +43,6 @@ static void prv_journey_details_window_load(Window *window);
 static void prv_journey_details_window_unload(Window *window);
 static void prv_pin_menu_window_load(Window *window);
 static void prv_pin_menu_window_unload(Window *window);
-static void prv_settings_window_load(Window *window);
-static void prv_settings_window_unload(Window *window);
 
 // --- Global Application Data ---
 static AppData s_app;
@@ -56,10 +53,10 @@ static SimpleMenuItem s_pin_menu_items[3];
 static SimpleMenuLayer *s_pin_simple_menu_layer;
 static int s_pin_selected_leg_index;
 
-// --- Settings Menu State ---
-static SimpleMenuSection s_settings_menu_sections[1];
-static SimpleMenuItem s_settings_menu_items[3];
-static SimpleMenuLayer *s_settings_simple_menu_layer;
+static SimpleMenuSection s_settings_sections[1];
+static SimpleMenuItem s_settings_items[3];
+static SimpleMenuLayer *s_settings_menu_layer;
+static char s_settings_sub[3][20];
 
 // --- Pin Queue ---
 #define MAX_PIN_QUEUE 4
@@ -75,22 +72,17 @@ static void prv_bg_blue_update_proc(Layer *layer, GContext *ctx) {
   graphics_fill_rect(ctx, layer_get_bounds(layer), 0, GCornerNone);
 }
 
-// This function will be used to draw the yellow main area
+static GColor s_mid_band_color;
 static void prv_bg_yellow_update_proc(Layer *layer, GContext *ctx) {
-  graphics_context_set_fill_color(ctx, GColorYellow);
+  graphics_context_set_fill_color(ctx, s_mid_band_color);
   graphics_fill_rect(ctx, layer_get_bounds(layer), 0, GCornerNone);
 }
-
-// Green for OVER > 2 min
-static void prv_bg_green_update_proc(Layer *layer, GContext *ctx) {
-  graphics_context_set_fill_color(ctx, GColorMintGreen);
-  graphics_fill_rect(ctx, layer_get_bounds(layer), 0, GCornerNone);
-}
-
-// Red for OVER < 0 (te laat)
-static void prv_bg_red_update_proc(Layer *layer, GContext *ctx) {
-  graphics_context_set_fill_color(ctx, GColorMelon);
-  graphics_fill_rect(ctx, layer_get_bounds(layer), 0, GCornerNone);
+static void prv_set_mid_band(GColor c) {
+  if (gcolor_equal(s_mid_band_color, c)) return;
+  s_mid_band_color = c;
+  if (s_app.countdown_ui.bg_yellow_layer) {
+    layer_mark_dirty(s_app.countdown_ui.bg_yellow_layer);
+  }
 }
 #else
 // This function will be used to draw the black top/bottom bar for non-color displays
@@ -202,116 +194,156 @@ static void prv_spinner_timer_callback(void *data) {
 
 // All data moved to s_app structure defined in trein_data.h
 
+static int prv_atoi(const char *s) {
+  int v = 0, sign = 1;
+  if (!s) return 0;
+  if (*s == '-') { sign = -1; s++; }
+  while (*s >= '0' && *s <= '9') { v = v * 10 + (*s - '0'); s++; }
+  return sign * v;
+}
+
+static time_t prv_parse_ns_epoch(const char *iso) {
+  if (!iso || iso[0] == '-' || iso[0] == '\0') return 0;
+  int len = 0;
+  while (iso[len]) len++;
+  if (len < 19) return 0;
+  int Y = (iso[0]-'0')*1000 + (iso[1]-'0')*100 + (iso[2]-'0')*10 + (iso[3]-'0');
+  int Mo = (iso[5]-'0')*10 + (iso[6]-'0');
+  int D = (iso[8]-'0')*10 + (iso[9]-'0');
+  int h = (iso[11]-'0')*10 + (iso[12]-'0');
+  int mi = (iso[14]-'0')*10 + (iso[15]-'0');
+  int s = (iso[17]-'0')*10 + (iso[18]-'0');
+  int y = Y - (Mo <= 2);
+  int era = (y >= 0 ? y : y - 399) / 400;
+  int yoe = y - era * 400;
+  unsigned m = (unsigned)Mo;
+  int doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + D - 1;
+  int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  int days = era * 146097 + doe - 719468;
+  time_t t = (time_t)days * 86400 + h * 3600 + mi * 60 + s;
+  if (len >= 24) {
+    int sign = (iso[19] == '-') ? -1 : 1;
+    int th = (iso[20]-'0')*10 + (iso[21]-'0');
+    int tmz = (iso[22] == ':') ? (iso[23]-'0')*10 + (iso[24]-'0')
+                              : (iso[22]-'0')*10 + (iso[23]-'0');
+    t -= sign * (th * 3600 + tmz * 60);
+  }
+  return t;
+}
+
+static void prv_fmt_remain(char *buf, size_t n, int remaining) {
+  if (remaining < 0) {
+    snprintf(buf, n, "--:--");
+    return;
+  }
+  int hours = remaining / 3600;
+  int minutes = (remaining % 3600) / 60;
+  int seconds = remaining % 60;
+  if (hours > 0) snprintf(buf, n, "%02d:%02d", hours, minutes);
+  else snprintf(buf, n, "%02d:%02d", minutes, seconds);
+}
+
+static void prv_stamp_button(void) {
+  s_app.state.last_button_time = time(NULL);
+}
+
+static void prv_send_route_request(void) {
+  DictionaryIterator *iter;
+  if (app_message_outbox_begin(&iter) != APP_MSG_OK) return;
+  dict_write_uint8(iter, MESSAGE_KEY_REQUEST_ROUTE, 1);
+  dict_write_int32(iter, MESSAGE_KEY_ROUTE_MODE, (int32_t)s_app.settings.vervoer_mode);
+  app_message_outbox_send();
+}
+
+static void prv_send_settings_to_phone(void) {
+  DictionaryIterator *iter;
+  if (app_message_outbox_begin(&iter) != APP_MSG_OK) return;
+  dict_write_int32(iter, MESSAGE_KEY_SETTINGS_TIJD_MODE, (int32_t)s_app.settings.tijd_mode);
+  dict_write_int32(iter, MESSAGE_KEY_SETTINGS_REISTIJD, s_app.settings.reistijd_enabled ? 1 : 0);
+  dict_write_int32(iter, MESSAGE_KEY_SETTINGS_VERVOER, (int32_t)s_app.settings.vervoer_mode);
+  app_message_outbox_send();
+}
+
+static void prv_persist_settings(void) {
+  persist_write_int(PERSIST_TIJD, (int)s_app.settings.tijd_mode);
+  persist_write_bool(PERSIST_REISTIJD, s_app.settings.reistijd_enabled);
+  persist_write_int(PERSIST_VERVOER, (int)s_app.settings.vervoer_mode);
+}
+
+static void prv_refresh_timer_callback(void *data) {
+  s_app.state.refresh_timer = app_timer_register(30000, prv_refresh_timer_callback, NULL);
+  if (s_app.state.refresh_in_flight) return;
+  s_app.state.refresh_in_flight = true;
+  prv_send_route_request();
+}
+
 static void prv_countdown_timer_callback(void *data) {
   time_t now = time(NULL);
-  
-  // Check if trip is cancelled
-  if (strncmp(s_app.trips.delay[s_app.journey.selected_trip_index], "Cancelled", 9) == 0) {
-    text_layer_set_text(s_app.countdown_ui.vertrek_time_layer, "--:--");
-    text_layer_set_text(s_app.countdown_ui.over_time_layer, "");
-    layer_set_hidden(text_layer_get_layer(s_app.countdown_ui.over_label_layer), true);
-    layer_set_hidden(text_layer_get_layer(s_app.countdown_ui.over_time_layer), true);
-    return;
-  }
-  
-  // Calculate VERTREK time (countdown to actual/delayed departure)
-  int vertrek_seconds = s_app.state.departure_time - now;
-  
-  // For Tijd mode: Aankomst
-  if (s_app.settings.tijd_mode == TIJD_MODE_AANKOMST && s_app.journey.arrival_time > 0) {
-    vertrek_seconds = s_app.journey.arrival_time - now;
-  }
-  
-  // Format VERTREK time
-  if (vertrek_seconds > 0) {
-    int v_min = vertrek_seconds / 60;
-    int v_sec = vertrek_seconds % 60;
-    snprintf(s_app.buffers.vertrek_buffer, sizeof(s_app.buffers.vertrek_buffer), "%02d:%02d", v_min, v_sec);
+  int idx = s_app.journey.selected_trip_index;
+  int dep_remain = (int)(s_app.state.departure_time - now);
+  bool cancelled = (strncmp(s_app.trips.delay[idx], "Cancelled", 9) == 0);
+  bool hero_vertrek = s_app.routing.at_station || !s_app.settings.reistijd_enabled;
+  int over_remain;
+
+  if (s_app.settings.tijd_mode == TIJD_MODE_AANKOMST) {
+    time_t arr = (time_t)s_app.trips.arrivals_epoch[idx];
+    over_remain = arr ? (int)(arr - now) : -1;
   } else {
-    snprintf(s_app.buffers.vertrek_buffer, sizeof(s_app.buffers.vertrek_buffer), "00:00");
+    int slack = (s_app.routing.travel_duration_min + s_app.routing.station_offset_min) * 60;
+    over_remain = dep_remain - slack;
   }
-  
-  // Calculate OVER time (slack)
-  int travel_time = s_app.settings.reistijd_enabled ? 
-                    (s_app.routing.travel_duration_minutes + s_app.routing.station_offset_minutes) : 0;
-  int over_seconds = s_app.state.departure_time - now - (travel_time * 60);
-  
-  // Check if at station (within 2 min travel time)
-  bool at_station = (travel_time <= 2 && s_app.settings.reistijd_enabled) || s_app.routing.at_station;
-  
-  // Determine display mode
-  if (!s_app.settings.reistijd_enabled || at_station) {
-    // Reistijd uit OR at station: hide OVER, VERTREK becomes large
-    layer_set_hidden(text_layer_get_layer(s_app.countdown_ui.over_label_layer), true);
-    layer_set_hidden(text_layer_get_layer(s_app.countdown_ui.over_time_layer), true);
-    
-    text_layer_set_font(s_app.countdown_ui.vertrek_time_layer, fonts_get_system_font(FONT_KEY_LECO_42_NUMBERS));
-    text_layer_set_text(s_app.countdown_ui.vertrek_time_layer, s_app.buffers.vertrek_buffer);
-    
-    if (at_station) {
-      text_layer_set_text(s_app.countdown_ui.vertrek_label_layer, "op station");
-    } else {
-      text_layer_set_text(s_app.countdown_ui.vertrek_label_layer, "VERTREK");
+
+#ifdef PBL_COLOR
+  if (s_app.countdown_ui.bg_yellow_layer) {
+    GColor band = GColorYellow;
+    if (hero_vertrek) {
+      band = GColorWhite;
+    } else if (s_app.routing.have_duration || s_app.settings.tijd_mode == TIJD_MODE_AANKOMST) {
+      if (over_remain < 0) band = GColorRed;
+      else if (over_remain <= 120) band = GColorYellow;
+      else band = GColorGreen;
     }
-    
-    // Set background color: white/cream for at station
-    #ifdef PBL_COLOR
-    if (s_app.countdown_ui.bg_yellow_layer) {
-      layer_set_hidden(s_app.countdown_ui.bg_yellow_layer, false);
-      // White/cream is just showing the base yellow layer without tint
-    }
-    #endif
+    prv_set_mid_band(band);
+  }
+#endif
+
+  layer_set_hidden(text_layer_get_layer(s_app.countdown_ui.vertrek_label_layer), hero_vertrek);
+  layer_set_hidden(text_layer_get_layer(s_app.countdown_ui.vertrek_time_layer), hero_vertrek);
+  layer_set_hidden(text_layer_get_layer(s_app.countdown_ui.over_label_layer), false);
+  layer_set_hidden(text_layer_get_layer(s_app.countdown_ui.over_time_layer), false);
+
+  if (hero_vertrek) {
+    text_layer_set_text(s_app.countdown_ui.over_label_layer, "VERTREK");
   } else {
-    // Show both OVER and VERTREK
-    layer_set_hidden(text_layer_get_layer(s_app.countdown_ui.over_label_layer), false);
-    layer_set_hidden(text_layer_get_layer(s_app.countdown_ui.over_time_layer), false);
-    
-    text_layer_set_font(s_app.countdown_ui.vertrek_time_layer, fonts_get_system_font(FONT_KEY_LECO_32_BOLD_NUMBERS));
-    text_layer_set_text(s_app.countdown_ui.vertrek_time_layer, s_app.buffers.vertrek_buffer);
+    text_layer_set_text(s_app.countdown_ui.over_label_layer, "OVER");
     text_layer_set_text(s_app.countdown_ui.vertrek_label_layer, "VERTREK");
-    
-    // Format OVER time
-    int over_min = over_seconds / 60;
-    int over_sec = over_seconds % 60;
-    if (over_seconds >= 0) {
-      snprintf(s_app.buffers.over_buffer, sizeof(s_app.buffers.over_buffer), "%02d:%02d", over_min, over_sec);
+    if (cancelled) {
+      text_layer_set_text(s_app.countdown_ui.over_time_layer, "--:--");
+    } else if (s_app.settings.tijd_mode != TIJD_MODE_AANKOMST && !s_app.routing.have_duration) {
+      text_layer_set_text(s_app.countdown_ui.over_time_layer, "...");
     } else {
-      snprintf(s_app.buffers.over_buffer, sizeof(s_app.buffers.over_buffer), "-%02d:%02d", -over_min, -over_sec);
+      prv_fmt_remain(s_app.buffers.over_buffer, sizeof(s_app.buffers.over_buffer), over_remain);
+      text_layer_set_text(s_app.countdown_ui.over_time_layer, s_app.buffers.over_buffer);
     }
-    text_layer_set_text(s_app.countdown_ui.over_time_layer, s_app.buffers.over_buffer);
-    
-    // Set color based on OVER time
-    #ifdef PBL_COLOR
-    if (s_app.countdown_ui.bg_yellow_layer) {
-      if (over_seconds > 120) {
-        // Green: > 2 min
-        layer_set_update_proc(s_app.countdown_ui.bg_yellow_layer, prv_bg_green_update_proc);
-      } else if (over_seconds >= 0) {
-        // Yellow: 0-2 min
-        layer_set_update_proc(s_app.countdown_ui.bg_yellow_layer, prv_bg_yellow_update_proc);
-      } else {
-        // Red: < 0 (te laat)
-        layer_set_update_proc(s_app.countdown_ui.bg_yellow_layer, prv_bg_red_update_proc);
-      }
-      layer_mark_dirty(s_app.countdown_ui.bg_yellow_layer);
-    }
-    #endif
   }
-  
-  // Auto-exit after departure + 3min idle (not for cancelled trips)
-  if (s_app.state.departure_time > 0 && 
-      now > s_app.state.departure_time && 
-      s_app.state.last_button_time > 0 &&
-      (now - s_app.state.last_button_time) >= 180) {
-    APP_LOG(APP_LOG_LEVEL_INFO, "Auto-exit: train departed + 3min idle");
-    if (s_app.state.refresh_timer) {
-      app_timer_cancel(s_app.state.refresh_timer);
-      s_app.state.refresh_timer = NULL;
+
+  if (cancelled) {
+    snprintf(s_app.buffers.vertrek_buffer, sizeof(s_app.buffers.vertrek_buffer), "--:--");
+  } else if (dep_remain > 0) {
+    prv_fmt_remain(s_app.buffers.vertrek_buffer, sizeof(s_app.buffers.vertrek_buffer), dep_remain);
+  } else {
+    snprintf(s_app.buffers.vertrek_buffer, sizeof(s_app.buffers.vertrek_buffer), "Departed");
+    if (s_app.state.last_button_time && (now - s_app.state.last_button_time) >= 180) {
+      window_stack_pop_all(true);
+      return;
     }
-    window_stack_pop_all(false);
-    return;
   }
-  
+  if (hero_vertrek) {
+    text_layer_set_text(s_app.countdown_ui.over_time_layer, s_app.buffers.vertrek_buffer);
+  } else {
+    text_layer_set_text(s_app.countdown_ui.vertrek_time_layer, s_app.buffers.vertrek_buffer);
+  }
+
   s_app.state.countdown_timer = app_timer_register(1000, prv_countdown_timer_callback, NULL);
 }
 
@@ -324,53 +356,7 @@ static void prv_parse_time_and_start_timer() {
     text_layer_set_text(s_app.countdown_ui.vertrek_time_layer, "--:--");
     return;
   }
-  
-  // Get actual departure time (with delay)
-  time_t new_departure_time = s_app.trips.departures[s_app.journey.selected_trip_index];
-  
-  // Vibrate if departure time changed (NS delay update)
-  if (s_app.state.last_departure_time != 0 && s_app.state.last_departure_time != new_departure_time) {
-    vibes_short_pulse();
-    APP_LOG(APP_LOG_LEVEL_INFO, "Departure time changed: %ld -> %ld", 
-            (long)s_app.state.last_departure_time, (long)new_departure_time);
-  }
-  
-  s_app.state.last_departure_time = s_app.state.departure_time;
-  s_app.state.departure_time = new_departure_time;
-  
-  // Parse planned departure time from string
-  const char *planned_time_str = s_app.trips.planned_departures[s_app.journey.selected_trip_index];
-  if (planned_time_str[0] != '\0') {
-    struct tm tm = {0};
-    // Format: "2025-01-27T12:34:00+0100"
-    sscanf(planned_time_str, "%d-%d-%dT%d:%d:%d",
-           &tm.tm_year, &tm.tm_mon, &tm.tm_mday,
-           &tm.tm_hour, &tm.tm_min, &tm.tm_sec);
-    tm.tm_year -= 1900;
-    tm.tm_mon -= 1;
-    s_app.state.planned_departure_time = mktime(&tm);
-  } else {
-    s_app.state.planned_departure_time = s_app.state.departure_time;
-  }
-  
-  // Parse arrival time
-  const char *arrival_str = s_app.trips.arrivals[s_app.journey.selected_trip_index];
-  if (arrival_str[0] != '\0' && strncmp(arrival_str, "--:--", 5) != 0) {
-    struct tm arr_tm = {0};
-    sscanf(arrival_str, "%d-%d-%dT%d:%d:%d",
-           &arr_tm.tm_year, &arr_tm.tm_mon, &arr_tm.tm_mday,
-           &arr_tm.tm_hour, &arr_tm.tm_min, &arr_tm.tm_sec);
-    arr_tm.tm_year -= 1900;
-    arr_tm.tm_mon -= 1;
-    s_app.journey.arrival_time = mktime(&arr_tm);
-  } else {
-    s_app.journey.arrival_time = s_app.state.departure_time + 1800; // Default 30 min if not available
-  }
-  
-  // Calculate delay in minutes
-  s_app.state.delay_minutes = (s_app.state.departure_time - s_app.state.planned_departure_time) / 60;
-  if (s_app.state.delay_minutes < 0) s_app.state.delay_minutes = 0;
-  
+  s_app.state.departure_time = s_app.trips.departures[s_app.journey.selected_trip_index];
   prv_countdown_timer_callback(NULL);
 }
 
@@ -389,7 +375,7 @@ static void prv_clock_timer_callback(void *data) {
 static void prv_trip_leg_layer_update_proc(Layer *layer, GContext *ctx) {
   int transfers = 0;
   if (s_app.trips.count > 0 && s_app.trips.transfers[s_app.journey.selected_trip_index][0] != '\0') {
-    transfers = atoi(s_app.trips.transfers[s_app.journey.selected_trip_index]);
+    transfers = prv_atoi(s_app.trips.transfers[s_app.journey.selected_trip_index]);
   }
   int num_legs = transfers + 1;
 
@@ -574,7 +560,7 @@ static void prv_update_countdown_display_animated(AnimationDirection direction) 
 }
 
 static void prv_countdown_down_click_handler(ClickRecognizerRef recognizer, void *context) {
-  s_app.state.last_button_time = time(NULL);
+  prv_stamp_button();
   if (s_app.trips.count > 0 && !s_app.state.is_animating) {
     s_app.journey.selected_trip_index++;
     if (s_app.journey.selected_trip_index >= s_app.trips.count) { s_app.journey.selected_trip_index = 0; }
@@ -583,7 +569,7 @@ static void prv_countdown_down_click_handler(ClickRecognizerRef recognizer, void
 }
 
 static void prv_countdown_up_click_handler(ClickRecognizerRef recognizer, void *context) {
-  s_app.state.last_button_time = time(NULL);
+  prv_stamp_button();
   if (s_app.trips.count > 0 && !s_app.state.is_animating) {
     s_app.journey.selected_trip_index--;
     if (s_app.journey.selected_trip_index < 0) { s_app.journey.selected_trip_index = s_app.trips.count - 1; }
@@ -685,20 +671,9 @@ static void prv_alpha_menu_draw_row_callback(GContext *ctx, const Layer *cell_la
 static void prv_alpha_menu_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {
   int station_index = alphabet_index[s_app.state.selected_alphabet_index].start_index + cell_index->row;
   const Station *station = &all_stations[station_index];
-  
-  if (s_app.state.selecting_start_station) {
-    strncpy(s_app.journey.start_station_code, station->code, sizeof(s_app.journey.start_station_code) - 1);
-    strncpy(s_app.journey.start_station_name, station->name, sizeof(s_app.journey.start_station_name) - 1);
-    s_app.state.selecting_start_station = false;
-    // Pop alpha menu and dest menu, then show dest menu again for destination
-    window_stack_pop(true);
-    window_stack_pop(true);
-    window_stack_push(s_app.windows.dest_menu_window, true);
-  } else {
-    strncpy(s_app.journey.dest_station_code, station->code, sizeof(s_app.journey.dest_station_code) - 1);
-    strncpy(s_app.journey.dest_station_name, station->name, sizeof(s_app.journey.dest_station_name) - 1);
-    prv_send_trip_request();
-  }
+  strncpy(s_app.journey.dest_station_code, station->code, sizeof(s_app.journey.dest_station_code) - 1);
+  strncpy(s_app.journey.dest_station_name, station->name, sizeof(s_app.journey.dest_station_name) - 1);
+  prv_send_trip_request();
 }
 
 static void prv_alpha_menu_window_load(Window *window) {
@@ -739,15 +714,12 @@ static int16_t prv_dest_menu_get_header_height_callback(MenuLayer *menu_layer, u
 
 static void prv_dest_menu_draw_header_callback(GContext *ctx, const Layer *cell_layer, uint16_t section_index, void *context) {
   const char *header;
-  // Show different headers when selecting start vs destination
-  bool is_selecting_start = s_app.state.selecting_start_station;
-  
   if (s_app.favourites.count > 0) {
     if (section_index == 0) header = "Favourites";
-    else if (section_index == 1) header = is_selecting_start ? "From Station" : "Top Stations";
+    else if (section_index == 1) header = "Top Stations";
     else header = "By Letter";
   } else {
-    header = (section_index == 0) ? (is_selecting_start ? "From Station" : "Top Stations") : "By Letter";
+    header = (section_index == 0) ? "Top Stations" : "By Letter";
   }
   #ifdef PBL_ROUND
   GRect bounds = layer_get_bounds(cell_layer);
@@ -784,26 +756,12 @@ static void prv_dest_menu_draw_row_callback(GContext *ctx, const Layer *cell_lay
 static void prv_dest_menu_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {
   int section = cell_index->section;
   int row = cell_index->row;
-  char selected_code[5];
-  char selected_name[MAX_STATION_NAME_LENGTH];
 
   if (s_app.favourites.count > 0) {
     if (section == 0) {
-      strncpy(selected_code, s_app.favourites.codes[row], sizeof(selected_code) - 1);
-      strncpy(selected_name, s_app.favourites.names[row], sizeof(selected_name) - 1);
-      
-      if (s_app.state.selecting_start_station) {
-        strncpy(s_app.journey.start_station_code, selected_code, sizeof(s_app.journey.start_station_code) - 1);
-        strncpy(s_app.journey.start_station_name, selected_name, sizeof(s_app.journey.start_station_name) - 1);
-        s_app.state.selecting_start_station = false;
-        // Pop back and show dest menu again for destination
-        window_stack_pop(true);
-        window_stack_push(s_app.windows.dest_menu_window, true);
-      } else {
-        strncpy(s_app.journey.dest_station_code, selected_code, sizeof(s_app.journey.dest_station_code) - 1);
-        strncpy(s_app.journey.dest_station_name, selected_name, sizeof(s_app.journey.dest_station_name) - 1);
-        prv_send_trip_request();
-      }
+      strncpy(s_app.journey.dest_station_code, s_app.favourites.codes[row], sizeof(s_app.journey.dest_station_code) - 1);
+      strncpy(s_app.journey.dest_station_name, s_app.favourites.names[row], sizeof(s_app.journey.dest_station_name) - 1);
+      prv_send_trip_request();
       return;
     }
     section--;
@@ -811,21 +769,9 @@ static void prv_dest_menu_select_callback(MenuLayer *menu_layer, MenuIndex *cell
 
   if (section == 0) {
     const Station *station = &top_stations[row];
-    strncpy(selected_code, station->code, sizeof(selected_code) - 1);
-    strncpy(selected_name, station->name, sizeof(selected_name) - 1);
-    
-    if (s_app.state.selecting_start_station) {
-      strncpy(s_app.journey.start_station_code, selected_code, sizeof(s_app.journey.start_station_code) - 1);
-      strncpy(s_app.journey.start_station_name, selected_name, sizeof(s_app.journey.start_station_name) - 1);
-      s_app.state.selecting_start_station = false;
-      // Pop back and show dest menu again for destination
-      window_stack_pop(true);
-      window_stack_push(s_app.windows.dest_menu_window, true);
-    } else {
-      strncpy(s_app.journey.dest_station_code, selected_code, sizeof(s_app.journey.dest_station_code) - 1);
-      strncpy(s_app.journey.dest_station_name, selected_name, sizeof(s_app.journey.dest_station_name) - 1);
-      prv_send_trip_request();
-    }
+    strncpy(s_app.journey.dest_station_code, station->code, sizeof(s_app.journey.dest_station_code) - 1);
+    strncpy(s_app.journey.dest_station_name, station->name, sizeof(s_app.journey.dest_station_name) - 1);
+    prv_send_trip_request();
   } else {
     s_app.state.selected_alphabet_index = row;
     if (!s_app.windows.alpha_menu_window) {
@@ -889,45 +835,14 @@ static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) 
   Tuple *favourite_name_tuple = dict_find(iter, MESSAGE_KEY_FAVOURITE_NAME);
   Tuple *favourite_count_tuple = dict_find(iter, MESSAGE_KEY_FAVOURITE_COUNT);
   Tuple *pin_status_tuple = dict_find(iter, MESSAGE_KEY_PIN_STATUS);
+  Tuple *route_duration_tuple = dict_find(iter, MESSAGE_KEY_ROUTE_DURATION);
+  Tuple *station_offset_tuple = dict_find(iter, MESSAGE_KEY_STATION_OFFSET);
+  Tuple *settings_tijd_tuple = dict_find(iter, MESSAGE_KEY_SETTINGS_TIJD_MODE);
+  Tuple *settings_reistijd_tuple = dict_find(iter, MESSAGE_KEY_SETTINGS_REISTIJD);
+  Tuple *settings_vervoer_tuple = dict_find(iter, MESSAGE_KEY_SETTINGS_VERVOER);
   
   if (error_tuple) {
-    s_app.state.refresh_in_flight = false;
-    
-    // Dismiss loading window if present
-    Window *top_window = window_stack_get_top_window();
-    if (top_window == s_app.windows.loading_window) {
-      window_stack_pop(true);
-    }
-    
-    // If error during refresh on countdown screen, just keep showing old data
-    if (top_window == s_app.windows.countdown_window) {
-      return;
-    }
-    
-    // Show error on main window if it's visible
-    if (s_app.main_ui.text_layer) {
-      text_layer_set_text(s_app.main_ui.text_layer, "Add API key in settings...");
-    }
-    return;
-  }
-
-  // Handle station count of 0 (location failed - fallback to manual selection)
-  if (station_count_tuple && station_count_tuple->value->int32 == 0) {
-    if (s_app.state.fallback_timer) { app_timer_cancel(s_app.state.fallback_timer); s_app.state.fallback_timer = NULL; }
-    if (s_app.state.spinner_timer) {
-      app_timer_cancel(s_app.state.spinner_timer);
-      s_app.state.spinner_timer = NULL;
-    }
-    
-    // Location failed - use destination menu for start station selection
-    s_app.state.selecting_start_station = true;
-    if (!s_app.windows.dest_menu_window) {
-      s_app.windows.dest_menu_window = window_create();
-      window_set_window_handlers(s_app.windows.dest_menu_window, (WindowHandlers) {
-        .load = prv_dest_menu_window_load, .unload = prv_dest_menu_window_unload,
-      });
-    }
-    window_stack_push(s_app.windows.dest_menu_window, true);
+    text_layer_set_text(s_app.main_ui.text_layer, "Add API key in settings...");
     return;
   }
 
@@ -977,12 +892,21 @@ static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) 
     if (index >= 0 && index < MAX_TRIPS) {
       strncpy(s_app.trips.planned_departures[index], planned_departure_time, MAX_DATE_TIME_LENGTH - 1);
       s_app.trips.planned_departures[index][MAX_DATE_TIME_LENGTH - 1] = '\0';
+      int prev_dep = s_app.trips.departures[index];
       s_app.trips.departures[index] = departure_time;
+      if (s_app.trips.loaded && index == s_app.journey.selected_trip_index &&
+          prev_dep != 0 && prev_dep != departure_time) {
+        vibes_short_pulse();
+      }
 
       strncpy(s_app.trips.planned_arrivals[index], planned_arrival_time, MAX_DATE_TIME_LENGTH - 1);
       s_app.trips.planned_arrivals[index][MAX_DATE_TIME_LENGTH - 1] = '\0';
       strncpy(s_app.trips.arrivals[index], arrival_time, MAX_DATE_TIME_LENGTH - 1);
       s_app.trips.arrivals[index][MAX_DATE_TIME_LENGTH - 1] = '\0';
+      s_app.trips.arrivals_epoch[index] = (int)prv_parse_ns_epoch(arrival_time);
+      if (!s_app.trips.arrivals_epoch[index]) {
+        s_app.trips.arrivals_epoch[index] = (int)prv_parse_ns_epoch(planned_arrival_time);
+      }
 
       snprintf(s_app.trips.transfers[index], MAX_TRANSFERS_LENGTH, "%d", transfers_val);
       strncpy(s_app.trips.platform[index], platform, MAX_PLATFORM_LENGTH - 1);
@@ -995,21 +919,6 @@ static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) 
       if (s_app.trips.count >= count) {
         s_app.trips.loaded = true;
         s_app.state.refresh_in_flight = false;
-        
-        Window *top_window = window_stack_get_top_window();
-        
-        // If this is a refresh (countdown window already showing), just update the display
-        if (top_window == s_app.windows.countdown_window) {
-          prv_parse_time_and_start_timer();
-          text_layer_set_text(s_app.countdown_ui.platform_number_layer, s_app.trips.platform[s_app.journey.selected_trip_index]);
-          return;
-        }
-        
-        // Dismiss loading window if present and show countdown window
-        if (top_window == s_app.windows.loading_window) {
-          window_stack_remove(s_app.windows.loading_window, false);
-        }
-        
         if (!s_app.windows.countdown_window) {
           s_app.windows.countdown_window = window_create();
           window_set_window_handlers(s_app.windows.countdown_window, (WindowHandlers) {
@@ -1017,7 +926,11 @@ static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) 
           });
           window_set_click_config_provider(s_app.windows.countdown_window, prv_countdown_click_config_provider);
         }
-        window_stack_push(s_app.windows.countdown_window, true);
+        if (!window_stack_contains_window(s_app.windows.countdown_window)) {
+          window_stack_push(s_app.windows.countdown_window, true);
+        } else if (s_app.countdown_ui.vertrek_time_layer) {
+          prv_update_countdown_display();
+        }
       }
     }
   }
@@ -1101,6 +1014,36 @@ static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) 
     } else {
       vibes_long_pulse();
     }
+  }
+
+  if (station_offset_tuple) {
+    s_app.routing.station_offset_min = (int)station_offset_tuple->value->int32;
+    s_app.state.refresh_in_flight = false;
+  }
+  if (route_duration_tuple) {
+    int d = (int)route_duration_tuple->value->int32;
+    if (d < 0) {
+      s_app.routing.at_station = true;
+      s_app.routing.have_duration = true;
+      s_app.routing.travel_duration_min = 0;
+    } else {
+      s_app.routing.at_station = false;
+      s_app.routing.have_duration = true;
+      s_app.routing.travel_duration_min = d;
+    }
+    s_app.state.refresh_in_flight = false;
+    if (s_app.countdown_ui.vertrek_time_layer) {
+      prv_update_countdown_display();
+    }
+  }
+  if (settings_tijd_tuple) {
+    s_app.settings.tijd_mode = settings_tijd_tuple->value->int32 ? TIJD_MODE_AANKOMST : TIJD_MODE_VERTREK;
+  }
+  if (settings_reistijd_tuple) {
+    s_app.settings.reistijd_enabled = settings_reistijd_tuple->value->int32 != 0;
+  }
+  if (settings_vervoer_tuple) {
+    s_app.settings.vervoer_mode = settings_vervoer_tuple->value->int32 ? VERVOER_FIETS : VERVOER_LOPEN;
   }
 }
 
@@ -1213,11 +1156,19 @@ static void prv_init(void) {
   memset(&s_app, 0, sizeof(AppData));
   s_app.buffers.letter_str[0] = 'A';
   s_app.buffers.letter_str[1] = '\0';
-  
-  // Initialize settings with defaults
-  s_app.settings.tijd_mode = TIJD_MODE_VERTREK;
-  s_app.settings.reistijd_enabled = false;
-  s_app.settings.vervoer_mode = VERVOER_LOPEN;
+  s_app.settings.reistijd_enabled = true;
+#ifdef PBL_COLOR
+  s_mid_band_color = GColorYellow;
+#endif
+  if (persist_exists(PERSIST_TIJD)) {
+    s_app.settings.tijd_mode = persist_read_int(PERSIST_TIJD) ? TIJD_MODE_AANKOMST : TIJD_MODE_VERTREK;
+  }
+  if (persist_exists(PERSIST_REISTIJD)) {
+    s_app.settings.reistijd_enabled = persist_read_bool(PERSIST_REISTIJD);
+  }
+  if (persist_exists(PERSIST_VERVOER)) {
+    s_app.settings.vervoer_mode = persist_read_int(PERSIST_VERVOER) ? VERVOER_FIETS : VERVOER_LOPEN;
+  }
 
   app_message_register_inbox_received(prv_inbox_received_handler);
   app_message_register_inbox_dropped(prv_inbox_dropped_handler);
@@ -1233,115 +1184,13 @@ static void prv_init(void) {
 
 static void prv_deinit(void) {
   if(s_app.state.fallback_timer) app_timer_cancel(s_app.state.fallback_timer);
-  if(s_app.state.refresh_timer) app_timer_cancel(s_app.state.refresh_timer);
   if(s_app.windows.menu_window) window_destroy(s_app.windows.menu_window);
   if(s_app.windows.dest_menu_window) window_destroy(s_app.windows.dest_menu_window);
   if(s_app.windows.alpha_menu_window) window_destroy(s_app.windows.alpha_menu_window);
-  if(s_app.windows.loading_window) window_destroy(s_app.windows.loading_window);
   if(s_app.windows.countdown_window) window_destroy(s_app.windows.countdown_window);
   if(s_app.windows.journey_details_window) window_destroy(s_app.windows.journey_details_window);
+  if(s_app.windows.settings_window) window_destroy(s_app.windows.settings_window);
   window_destroy(s_app.windows.main_window);
-}
-
-static void prv_loading_window_load(Window *window) {
-  Layer *window_layer = window_get_root_layer(window);
-  GRect bounds = layer_get_bounds(window_layer);
-  const int bar_height = 40;
-  
-  #ifdef PBL_COLOR
-    s_app.loading_ui.bg_blue_layer = layer_create(GRect(0, 0, bounds.size.w, bar_height));
-    layer_set_update_proc(s_app.loading_ui.bg_blue_layer, prv_bg_blue_update_proc);
-    layer_add_child(window_layer, s_app.loading_ui.bg_blue_layer);
-    s_app.loading_ui.bg_blue_bottom_layer = layer_create(GRect(0, bounds.size.h - bar_height, bounds.size.w, bar_height));
-    layer_set_update_proc(s_app.loading_ui.bg_blue_bottom_layer, prv_bg_blue_update_proc);
-    layer_add_child(window_layer, s_app.loading_ui.bg_blue_bottom_layer);
-    s_app.loading_ui.bg_yellow_layer = layer_create(GRect(0, bar_height, bounds.size.w, bounds.size.h - (bar_height * 2)));
-    layer_set_update_proc(s_app.loading_ui.bg_yellow_layer, prv_bg_yellow_update_proc);
-    layer_add_child(window_layer, s_app.loading_ui.bg_yellow_layer);
-  #else
-    s_app.loading_ui.bg_blue_layer = layer_create(GRect(0, 0, bounds.size.w, bar_height));
-    layer_set_update_proc(s_app.loading_ui.bg_blue_layer, prv_bg_black_update_proc);
-    layer_add_child(window_layer, s_app.loading_ui.bg_blue_layer);
-    s_app.loading_ui.bg_blue_bottom_layer = layer_create(GRect(0, bounds.size.h - bar_height, bounds.size.w, bar_height));
-    layer_set_update_proc(s_app.loading_ui.bg_blue_bottom_layer, prv_bg_black_update_proc);
-    layer_add_child(window_layer, s_app.loading_ui.bg_blue_bottom_layer);
-  #endif
-
-  // Create spinner layer centered
-  GPoint center = grect_center_point(&bounds);
-  int spinner_size = bounds.size.h / 2;
-  int spinner_radius = spinner_size / 2;
-  s_app.loading_ui.spinner_layer = layer_create(GRect(center.x - spinner_radius, center.y - spinner_radius, spinner_size, spinner_size));
-  layer_set_update_proc(s_app.loading_ui.spinner_layer, prv_spinner_layer_update_proc);
-  layer_add_child(window_layer, s_app.loading_ui.spinner_layer);
-
-  // Create text layer
-  s_app.loading_ui.text_layer = text_layer_create(GRect(0, bounds.size.h - bar_height, bounds.size.w, bar_height));
-  text_layer_set_text_alignment(s_app.loading_ui.text_layer, GTextAlignmentCenter);
-  text_layer_set_background_color(s_app.loading_ui.text_layer, GColorClear);
-  text_layer_set_text_color(s_app.loading_ui.text_layer, GColorWhite);
-  text_layer_set_text(s_app.loading_ui.text_layer, "Loading trips...");
-  layer_add_child(window_layer, text_layer_get_layer(s_app.loading_ui.text_layer));
-
-  // Start spinner animation
-  if (!s_app.state.spinner_timer) {
-    s_app.state.spinner_angle = 0;
-    s_app.state.spinner_timer = app_timer_register(50, prv_spinner_timer_callback, NULL);
-  }
-}
-
-static void prv_loading_window_unload(Window *window) {
-  // Stop spinner animation
-  if (s_app.state.spinner_timer) {
-    app_timer_cancel(s_app.state.spinner_timer);
-    s_app.state.spinner_timer = NULL;
-  }
-
-  if (s_app.loading_ui.spinner_layer) {
-    layer_destroy(s_app.loading_ui.spinner_layer);
-    s_app.loading_ui.spinner_layer = NULL;
-  }
-
-  text_layer_destroy(s_app.loading_ui.text_layer);
-  layer_destroy(s_app.loading_ui.bg_blue_layer);
-  layer_destroy(s_app.loading_ui.bg_blue_bottom_layer);
-  #ifdef PBL_COLOR
-    layer_destroy(s_app.loading_ui.bg_yellow_layer);
-  #endif
-}
-
-static void prv_refresh_timer_callback(void *data) {
-  // Check if countdown window is still open
-  Window *top_window = window_stack_get_top_window();
-  if (top_window != s_app.windows.countdown_window) {
-    // Not on countdown screen anymore, stop refreshing
-    s_app.state.refresh_timer = NULL;
-    return;
-  }
-  
-  // Skip if a refresh is already in flight
-  if (s_app.state.refresh_in_flight) {
-    // Reschedule for next interval
-    s_app.state.refresh_timer = app_timer_register(30000, prv_refresh_timer_callback, NULL);
-    return;
-  }
-  
-  // Send refresh request
-  prv_send_trip_refresh();
-  
-  // Schedule next refresh
-  s_app.state.refresh_timer = app_timer_register(30000, prv_refresh_timer_callback, NULL);
-}
-
-static void prv_send_trip_refresh(void) {
-  DictionaryIterator *iter;
-  if (app_message_outbox_begin(&iter) == APP_MSG_OK) {
-    s_app.state.refresh_in_flight = true;
-    dict_write_cstring(iter, MESSAGE_KEY_START_STATION_CODE, s_app.journey.start_station_code);
-    dict_write_cstring(iter, MESSAGE_KEY_DEST_STATION_CODE, s_app.journey.dest_station_code);
-    app_message_outbox_send();
-    // No loading window for background refresh
-  }
 }
 
 static void prv_send_trip_request(void) {
@@ -1350,15 +1199,6 @@ static void prv_send_trip_request(void) {
     dict_write_cstring(iter, MESSAGE_KEY_START_STATION_CODE, s_app.journey.start_station_code);
     dict_write_cstring(iter, MESSAGE_KEY_DEST_STATION_CODE, s_app.journey.dest_station_code);
     app_message_outbox_send();
-    
-    // Show loading window
-    if (!s_app.windows.loading_window) {
-      s_app.windows.loading_window = window_create();
-      window_set_window_handlers(s_app.windows.loading_window, (WindowHandlers) {
-        .load = prv_loading_window_load, .unload = prv_loading_window_unload,
-      });
-    }
-    window_stack_push(s_app.windows.loading_window, true);
   }
 }
 
@@ -1571,7 +1411,7 @@ static void prv_journey_details_window_unload(Window *window) {
 }
 
 static void prv_countdown_select_click_handler(ClickRecognizerRef recognizer, void *context) {
-  s_app.state.last_button_time = time(NULL);
+  prv_stamp_button();
   // Push journey details window instead of popping all
   if (!s_app.windows.journey_details_window) {
     s_app.windows.journey_details_window = window_create();
@@ -1582,10 +1422,78 @@ static void prv_countdown_select_click_handler(ClickRecognizerRef recognizer, vo
   window_stack_push(s_app.windows.journey_details_window, true);
 }
 
+static void prv_countdown_select_long_click_handler(ClickRecognizerRef recognizer, void *context) {
+  prv_stamp_button();
+  if (!s_app.windows.settings_window) {
+    s_app.windows.settings_window = window_create();
+    window_set_window_handlers(s_app.windows.settings_window, (WindowHandlers) {
+      .load = prv_settings_window_load, .unload = prv_settings_window_unload,
+    });
+  }
+  window_stack_push(s_app.windows.settings_window, true);
+}
+
 static void prv_countdown_click_config_provider(void *context) {
   window_single_click_subscribe(BUTTON_ID_SELECT, prv_countdown_select_click_handler);
+  window_long_click_subscribe(BUTTON_ID_SELECT, 500, prv_countdown_select_long_click_handler, NULL);
   window_single_click_subscribe(BUTTON_ID_UP, prv_countdown_up_click_handler);
   window_single_click_subscribe(BUTTON_ID_DOWN, prv_countdown_down_click_handler);
+}
+
+static void prv_settings_rebuild_items(void) {
+  strncpy(s_settings_sub[0], s_app.settings.tijd_mode == TIJD_MODE_AANKOMST ? "Aankomst" : "Vertrek", 19);
+  strncpy(s_settings_sub[1], s_app.settings.reistijd_enabled ? "Aan" : "Uit", 19);
+  strncpy(s_settings_sub[2], s_app.settings.vervoer_mode == VERVOER_FIETS ? "Fiets" : "Lopen", 19);
+  s_settings_items[0].title = "Tijd";
+  s_settings_items[0].subtitle = s_settings_sub[0];
+  s_settings_items[1].title = "Reistijd";
+  s_settings_items[1].subtitle = s_settings_sub[1];
+  s_settings_items[2].title = "Vervoer";
+  s_settings_items[2].subtitle = s_settings_sub[2];
+}
+
+static void prv_settings_select_callback(int index, void *context) {
+  if (index == 0) {
+    s_app.settings.tijd_mode = (s_app.settings.tijd_mode == TIJD_MODE_VERTREK) ? TIJD_MODE_AANKOMST : TIJD_MODE_VERTREK;
+  } else if (index == 1) {
+    s_app.settings.reistijd_enabled = !s_app.settings.reistijd_enabled;
+  } else {
+    s_app.settings.vervoer_mode = (s_app.settings.vervoer_mode == VERVOER_LOPEN) ? VERVOER_FIETS : VERVOER_LOPEN;
+  }
+  prv_persist_settings();
+  prv_send_settings_to_phone();
+  prv_settings_rebuild_items();
+  s_settings_sections[0] = (SimpleMenuSection){ .num_items = 3, .items = s_settings_items };
+  if (s_settings_menu_layer) {
+    menu_layer_reload_data(simple_menu_layer_get_menu_layer(s_settings_menu_layer));
+  }
+}
+
+static void prv_settings_window_load(Window *window) {
+  Layer *window_layer = window_get_root_layer(window);
+  GRect bounds = layer_get_bounds(window_layer);
+  prv_settings_rebuild_items();
+  s_settings_items[0].callback = prv_settings_select_callback;
+  s_settings_items[1].callback = prv_settings_select_callback;
+  s_settings_items[2].callback = prv_settings_select_callback;
+  s_settings_sections[0] = (SimpleMenuSection){ .num_items = 3, .items = s_settings_items };
+  s_settings_menu_layer = simple_menu_layer_create(bounds, window, s_settings_sections, 1, NULL);
+#ifdef PBL_COLOR
+  MenuLayer *ml = simple_menu_layer_get_menu_layer(s_settings_menu_layer);
+  menu_layer_set_normal_colors(ml, GColorYellow, GColorBlack);
+  menu_layer_set_highlight_colors(ml, GColorOxfordBlue, GColorWhite);
+#endif
+  layer_add_child(window_layer, simple_menu_layer_get_layer(s_settings_menu_layer));
+}
+
+static void prv_settings_window_unload(Window *window) {
+  simple_menu_layer_destroy(s_settings_menu_layer);
+  s_settings_menu_layer = NULL;
+  window_destroy(s_app.windows.settings_window);
+  s_app.windows.settings_window = NULL;
+  if (s_app.countdown_ui.vertrek_time_layer) {
+    prv_update_countdown_display();
+  }
 }
 
  static void prv_countdown_window_load(Window *window) {
@@ -1593,7 +1501,6 @@ static void prv_countdown_click_config_provider(void *context) {
   GRect bounds = layer_get_bounds(window_layer);
   const int bar_height = 40;
   s_app.journey.selected_trip_index = 0;
-  s_app.state.last_button_time = time(NULL);
 
   #ifdef PBL_COLOR
     s_app.countdown_ui.bg_blue_layer = layer_create(GRect(0, 0, bounds.size.w, bar_height));
@@ -1691,28 +1598,23 @@ static void prv_countdown_click_config_provider(void *context) {
   text_layer_set_text_color(s_app.countdown_ui.delay_layer, GColorBlack);
   layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.delay_layer));
 
-  // OVER label (large, always "OVER")
-  const int over_y = countdown_y - 20;
-  s_app.countdown_ui.over_label_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(0, over_y - 18, bounds.size.w, 18), GRect(x_offset, over_y - 18, bounds.size.w - x_offset, 18)));
+  s_app.countdown_ui.over_label_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(0, countdown_y - 16, bounds.size.w, 18), GRect(x_offset, countdown_y - 16, bounds.size.w - x_offset - 5, 18)));
   text_layer_set_text(s_app.countdown_ui.over_label_layer, "OVER");
-  text_layer_set_font(s_app.countdown_ui.over_label_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+  text_layer_set_font(s_app.countdown_ui.over_label_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD));
   text_layer_set_text_alignment(s_app.countdown_ui.over_label_layer, PBL_IF_ROUND_ELSE(GTextAlignmentCenter, GTextAlignmentLeft));
   text_layer_set_background_color(s_app.countdown_ui.over_label_layer, GColorClear);
   text_layer_set_text_color(s_app.countdown_ui.over_label_layer, GColorBlack);
   layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.over_label_layer));
 
-  // OVER time (large number)
-  s_app.countdown_ui.over_time_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(0, over_y, bounds.size.w, 45), GRect(x_offset, over_y, bounds.size.w - x_offset, is_large_display ? 50 : 45)));
-  text_layer_set_text(s_app.countdown_ui.over_time_layer, "Loading...");
+  s_app.countdown_ui.over_time_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(0, countdown_y, bounds.size.w, 50), GRect(x_offset, countdown_y - 2, bounds.size.w - x_offset - 5, is_large_display ? 60 : 50)));
+  text_layer_set_text(s_app.countdown_ui.over_time_layer, "...");
   text_layer_set_font(s_app.countdown_ui.over_time_layer, fonts_get_system_font(is_large_display ? FONT_KEY_LECO_42_NUMBERS : FONT_KEY_LECO_36_BOLD_NUMBERS));
   text_layer_set_text_alignment(s_app.countdown_ui.over_time_layer, PBL_IF_ROUND_ELSE(GTextAlignmentCenter, GTextAlignmentLeft));
   text_layer_set_background_color(s_app.countdown_ui.over_time_layer, GColorClear);
   text_layer_set_text_color(s_app.countdown_ui.over_time_layer, GColorBlack);
   layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.over_time_layer));
 
-  // VERTREK label (smaller)
-  const int vertrek_y = countdown_y + (is_large_display ? 38 : 33);
-  s_app.countdown_ui.vertrek_label_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(0, vertrek_y - 16, bounds.size.w, 16), GRect(x_offset, vertrek_y - 16, bounds.size.w - x_offset, 16)));
+  s_app.countdown_ui.vertrek_label_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(0, delay_y - 36, bounds.size.w, 16), GRect(x_offset, delay_y - 36, 70, 16)));
   text_layer_set_text(s_app.countdown_ui.vertrek_label_layer, "VERTREK");
   text_layer_set_font(s_app.countdown_ui.vertrek_label_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD));
   text_layer_set_text_alignment(s_app.countdown_ui.vertrek_label_layer, PBL_IF_ROUND_ELSE(GTextAlignmentCenter, GTextAlignmentLeft));
@@ -1720,19 +1622,12 @@ static void prv_countdown_click_config_provider(void *context) {
   text_layer_set_text_color(s_app.countdown_ui.vertrek_label_layer, GColorBlack);
   layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.vertrek_label_layer));
 
-  // VERTREK time (smaller or large depending on mode)
-  s_app.countdown_ui.vertrek_time_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(0, vertrek_y, bounds.size.w, 35), GRect(x_offset, vertrek_y, bounds.size.w - x_offset, is_large_display ? 40 : 35)));
-  text_layer_set_text(s_app.countdown_ui.vertrek_time_layer, "00:00");
-  text_layer_set_font(s_app.countdown_ui.vertrek_time_layer, fonts_get_system_font(is_large_display ? FONT_KEY_LECO_32_BOLD_NUMBERS : FONT_KEY_LECO_28_LIGHT_NUMBERS));
+  s_app.countdown_ui.vertrek_time_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(0, delay_y - 22, bounds.size.w, 22), GRect(x_offset + 70, delay_y - 36, bounds.size.w - x_offset - 75, 22)));
+  text_layer_set_font(s_app.countdown_ui.vertrek_time_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
   text_layer_set_text_alignment(s_app.countdown_ui.vertrek_time_layer, PBL_IF_ROUND_ELSE(GTextAlignmentCenter, GTextAlignmentLeft));
   text_layer_set_background_color(s_app.countdown_ui.vertrek_time_layer, GColorClear);
   text_layer_set_text_color(s_app.countdown_ui.vertrek_time_layer, GColorBlack);
   layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.vertrek_time_layer));
-  
-  // Route spinner layer (small, shown when recalculating)
-  s_app.countdown_ui.route_spinner_layer = layer_create(GRect(bounds.size.w - 30, over_y + 10, 20, 20));
-  layer_set_hidden(s_app.countdown_ui.route_spinner_layer, true);
-  layer_add_child(window_layer, s_app.countdown_ui.route_spinner_layer);
 
   s_app.countdown_ui.clock_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(0, 0, bounds.size.w, 16), GRect(0, 0, bounds.size.w, is_large_display ? 20 : 16)));
   text_layer_set_font(s_app.countdown_ui.clock_layer, fonts_get_system_font(is_large_display ? FONT_KEY_GOTHIC_18 : FONT_KEY_GOTHIC_14));
@@ -1741,13 +1636,20 @@ static void prv_countdown_click_config_provider(void *context) {
   text_layer_set_text_color(s_app.countdown_ui.clock_layer, GColorWhite);
   layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.clock_layer));
 
+  prv_stamp_button();
+#ifdef PBL_COLOR
+  s_mid_band_color = GColorYellow;
+#endif
+  if (s_app.state.refresh_timer) {
+    app_timer_cancel(s_app.state.refresh_timer);
+  }
+  s_app.state.refresh_in_flight = false;
+  s_app.state.refresh_timer = app_timer_register(30000, prv_refresh_timer_callback, NULL);
+  prv_send_route_request();
+
   prv_clock_timer_callback(NULL);
 
   prv_update_countdown_display();
-  
-  // Start 30-second refresh timer
-  s_app.state.refresh_in_flight = false;
-  s_app.state.refresh_timer = app_timer_register(30000, prv_refresh_timer_callback, NULL);
 }
 
 static void prv_countdown_window_unload(Window *window) {
@@ -1760,12 +1662,11 @@ static void prv_countdown_window_unload(Window *window) {
     app_timer_cancel(s_app.state.clock_timer);
     s_app.state.clock_timer = NULL;
   }
-
-  // Stop refresh timer
   if (s_app.state.refresh_timer) {
     app_timer_cancel(s_app.state.refresh_timer);
     s_app.state.refresh_timer = NULL;
   }
+  s_app.state.refresh_in_flight = false;
 
   // Unschedule animation if running, but don't destroy (animations auto-free when complete)
   if (s_app.state.content_animation) {
@@ -1783,7 +1684,10 @@ static void prv_countdown_window_unload(Window *window) {
   text_layer_destroy(s_app.countdown_ui.over_time_layer);
   text_layer_destroy(s_app.countdown_ui.vertrek_label_layer);
   text_layer_destroy(s_app.countdown_ui.vertrek_time_layer);
-  layer_destroy(s_app.countdown_ui.route_spinner_layer);
+  s_app.countdown_ui.over_label_layer = NULL;
+  s_app.countdown_ui.over_time_layer = NULL;
+  s_app.countdown_ui.vertrek_label_layer = NULL;
+  s_app.countdown_ui.vertrek_time_layer = NULL;
   text_layer_destroy(s_app.countdown_ui.clock_layer);
   text_layer_destroy(s_app.countdown_ui.departure_time_layer);
   text_layer_destroy(s_app.countdown_ui.time_arrow_layer);

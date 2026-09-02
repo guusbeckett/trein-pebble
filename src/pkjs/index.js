@@ -31,41 +31,6 @@ function getApiKey() {
   return DEFAULT_API_KEY;
 }
 
-function getRoutingApiKey() {
-  try {
-    var key = localStorage.getItem("routing_api_key");
-    return key || "";
-  } catch (e) {
-    return "";
-  }
-}
-
-function getStationOffsets() {
-  try {
-    var offsets = localStorage.getItem("station_offsets");
-    return offsets ? JSON.parse(offsets) : {};
-  } catch (e) {
-    return {};
-  }
-}
-
-function getRouteMode() {
-  try {
-    var mode = localStorage.getItem("route_mode");
-    return mode === "bike" ? 1 : 0;
-  } catch (e) {
-    return 0;
-  }
-}
-
-function setRouteMode(mode) {
-  try {
-    localStorage.setItem("route_mode", mode === 1 ? "bike" : "walk");
-  } catch (e) {
-    console.log("Error saving route mode");
-  }
-}
-
 function getFavourites() {
   try {
     var favourites = localStorage.getItem("favourites");
@@ -77,6 +42,92 @@ function getFavourites() {
   }
   return [];
 }
+
+
+function lsGet(k, d) { try { var v = localStorage.getItem(k); return v == null ? d : v; } catch (e) { return d; } }
+function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+function getOrsKey() { return lsGet("routing_api_key", ""); }
+function offsetForCode(code) {
+  var map = {};
+  try { map = JSON.parse(lsGet("station_offsets", "{}")); } catch (e) {}
+  if (!code) return 0;
+  if (map[code] != null) return parseInt(map[code], 10) || 0;
+  var up = String(code).toUpperCase();
+  for (var k in map) { if (k.toUpperCase() === up) return parseInt(map[k], 10) || 0; }
+  return 0;
+}
+var lastStartCode = "", lastDestCode = "", stationCoords = {}, lastRouted = null, cachedDurationMin = null, orsInFlight = false;
+function haversineMeters(a, b, c, d) {
+  var P = Math.PI / 180, dLat = (c - a) * P, dLon = (d - b) * P;
+  var x = Math.sin(dLat / 2), y = Math.sin(dLon / 2);
+  var z = x * x + Math.cos(a * P) * Math.cos(c * P) * y * y;
+  return 12742000 * Math.atan2(Math.sqrt(z), Math.sqrt(1 - z));
+}
+function rememberStation(st) {
+  if (!st || !st.code) return;
+  var lat = st.lat != null ? st.lat : (st.latitude != null ? st.latitude : (st.locatie && st.locatie.lat) || (st.location && st.location.lat));
+  var lng = st.lng != null ? st.lng : (st.lon != null ? st.lon : st.longitude);
+  if (lng == null && st.locatie) lng = st.locatie.lng;
+  if (lng == null && st.location) lng = st.location.lng || st.location.lon;
+  if (lat != null && lng != null) stationCoords[st.code] = { lat: Number(lat), lng: Number(lng) };
+}
+function sendRouteToWatch(durationMin, atStation) {
+  var payload = { "STATION_OFFSET": offsetForCode(lastStartCode) };
+  if (atStation) payload.ROUTE_DURATION = -1;
+  else if (durationMin != null) payload.ROUTE_DURATION = durationMin;
+  Pebble.sendAppMessage(payload, function() {}, function() {});
+}
+function fetchOrsDuration(lat, lng, dest, profile, callback) {
+  var key = getOrsKey();
+  if (!key || !dest) { callback(null); return; }
+  if (orsInFlight) { callback(cachedDurationMin); return; }
+  orsInFlight = true;
+  var xhr = new XMLHttpRequest();
+  xhr.timeout = 8000;
+  xhr.open("GET", "https://api.openrouteservice.org/v2/directions/" + profile +
+    "?api_key=" + encodeURIComponent(key) + "&start=" + lng + "," + lat + "&end=" + dest.lng + "," + dest.lat, true);
+  xhr.onload = function() {
+    orsInFlight = false;
+    try {
+      var data = JSON.parse(xhr.responseText), sec;
+      if (data.features && data.features[0]) sec = data.features[0].properties.summary.duration;
+      else if (data.routes && data.routes[0]) sec = data.routes[0].summary.duration;
+      if (typeof sec === "number") {
+        lastRouted = { lat: lat, lng: lng };
+        cachedDurationMin = Math.max(0, Math.round(sec / 60));
+        callback(cachedDurationMin); return;
+      }
+    } catch (e) {}
+    callback(null);
+  };
+  xhr.onerror = xhr.ontimeout = function() { orsInFlight = false; callback(null); };
+  xhr.send();
+}
+function handleRouteTick(vervoer) {
+  var doGps = function(pos) {
+    var lat = pos.coords.latitude, lng = pos.coords.longitude;
+    if (lastStartCode && lastDestCode) requestTrips(lastStartCode, lastDestCode);
+    var dest = stationCoords[lastStartCode];
+    if (!dest) { sendRouteToWatch(null, false); return; }
+    if (haversineMeters(lat, lng, dest.lat, dest.lng) <= 150) { cachedDurationMin = 0; sendRouteToWatch(0, true); return; }
+    if (!getOrsKey()) { sendRouteToWatch(null, false); return; }
+    var moved = !lastRouted || haversineMeters(lat, lng, lastRouted.lat, lastRouted.lng) > 80;
+    if (!moved && cachedDurationMin != null) { sendRouteToWatch(cachedDurationMin, false); return; }
+    sendRouteToWatch(cachedDurationMin, false);
+    fetchOrsDuration(lat, lng, dest, vervoer === 1 ? "cycling-regular" : "foot-walking", function(mins) {
+      if (mins != null) sendRouteToWatch(mins, false);
+    });
+  };
+  var onErr = function() {
+    if (lastStartCode && lastDestCode) requestTrips(lastStartCode, lastDestCode);
+    sendRouteToWatch(cachedDurationMin, false);
+  };
+  if (typeof Pebble !== "undefined" && Pebble.platform === "pypkjs") {
+    doGps({ coords: { latitude: 51.58719, longitude: 4.78322 } }); return;
+  }
+  navigator.geolocation.getCurrentPosition(doGps, onErr, { timeout: 10000, maximumAge: 15000, enableHighAccuracy: false });
+}
+
 
 function sendFavouritesToWatch() {
   var favourites = getFavourites();
@@ -114,18 +165,15 @@ function sendFavouritesToWatch() {
 }
 
 Pebble.addEventListener("showConfiguration", function(e) {
-  var url = "https://guusbeckett.github.io/config.html";
+  var url = "https://cdn.jsdelivr.net/gh/SBerkers/trein-pebble@main/config.html";
   var currentKey = getApiKey();
-  var routingKey = getRoutingApiKey();
-  var offsets = getStationOffsets();
   var favourites = getFavourites();
-
-  var params = "?api_key=" + encodeURIComponent(currentKey) +
-               "&routing_api_key=" + encodeURIComponent(routingKey) +
-               "&station_offsets=" + encodeURIComponent(JSON.stringify(offsets)) +
-               "&favourites=" + encodeURIComponent(JSON.stringify(favourites));
-  
-  Pebble.openURL(url + params);
+  var ors = getOrsKey();
+  var offsets = localStorage.getItem("station_offsets") || "{}";
+  Pebble.openURL(url + "?api_key=" + encodeURIComponent(currentKey) +
+    "&routing_api_key=" + encodeURIComponent(ors) +
+    "&station_offsets=" + encodeURIComponent(offsets) +
+    "&favourites=" + encodeURIComponent(JSON.stringify(favourites)));
 });
 
 Pebble.addEventListener("webviewclosed", function(e) {
@@ -140,13 +188,10 @@ Pebble.addEventListener("webviewclosed", function(e) {
       localStorage.setItem("api_key", settings.api_key);
       console.log("Saved new API key.");
     }
-    if (settings.routing_api_key !== undefined) {
-      localStorage.setItem("routing_api_key", settings.routing_api_key);
-      console.log("Saved routing API key.");
-    }
-    if (settings.station_offsets) {
-      localStorage.setItem("station_offsets", JSON.stringify(settings.station_offsets));
-      console.log("Saved station offsets.");
+    if (settings.routing_api_key != null) lsSet("routing_api_key", settings.routing_api_key);
+    if (settings.station_offsets != null) {
+      var off = settings.station_offsets;
+      lsSet("station_offsets", typeof off === "string" ? off : JSON.stringify(off));
     }
     if (settings.favourites) {
       localStorage.setItem("favourites", JSON.stringify(settings.favourites));
@@ -158,151 +203,6 @@ Pebble.addEventListener("webviewclosed", function(e) {
   }
 });
 
-
-// Routing state
-var routingState = {
-  lastRoutedLat: null,
-  lastRoutedLng: null,
-  lastDuration: 0,
-  routeInFlight: false,
-  atStation: false
-};
-
-// Station coordinates (top stations from NS API)
-var stationCoords = {
-  'Ut': {lat: 52.0889, lng: 5.1100},
-  'Gvc': {lat: 52.0115, lng: 4.3571},
-  'Rtd': {lat: 51.9244, lng: 4.4694},
-  'Asd': {lat: 52.3789, lng: 4.9001},
-  'Gd': {lat: 51.8356, lng: 4.4785},
-  'Bd': {lat: 51.5892, lng: 4.7762},
-  'Tb': {lat: 51.5653, lng: 5.0818}
-};
-
-var ROUTE_DISPLACEMENT_THRESHOLD = 80; // meters
-
-function distanceMeters(lat1, lng1, lat2, lng2) {
-  var R = 6371000; // meters
-  var dLat = (lat2 - lat1) * Math.PI / 180;
-  var dLng = (lng2 - lng1) * Math.PI / 180;
-  var a = Math.sin(dLat/2) * Math.sin(dLat/2) +
-          Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-          Math.sin(dLng/2) * Math.sin(dLng/2);
-  var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-  return R * c;
-}
-
-function checkAtStation(lat, lng, stationCode) {
-  var station = stationCoords[stationCode];
-  if (!station) return false;
-  
-  var dist = distanceMeters(lat, lng, station.lat, station.lng);
-  return dist <= 150; // ~150m radius
-}
-
-function sendRouteDurationToWatch(duration, stationCode, atStation) {
-  var offsets = getStationOffsets();
-  var offset = offsets[stationCode] || 0;
-  
-  Pebble.sendAppMessage({
-    "ROUTE_DURATION": duration,
-    "STATION_OFFSET": offset,
-    "GPS_LAT": 1, // Signal that GPS is active
-    "GPS_LNG": atStation ? 1 : 0 // Use as at_station flag
-  });
-}
-
-function requestOpenRouteService(lat, lng, stationCode, mode) {
-  var apiKey = getRoutingApiKey();
-  if (!apiKey) {
-    console.log("No ORS key - cannot route");
-    routingState.routeInFlight = false;
-    return;
-  }
-  
-  var station = stationCoords[stationCode];
-  if (!station) {
-    console.log("Station coords unknown: " + stationCode);
-    routingState.routeInFlight = false;
-    return;
-  }
-  
-  var profile = (mode === 1) ? "cycling-regular" : "foot-walking";
-  var url = "https://api.openrouteservice.org/v2/directions/" + profile +
-            "?api_key=" + apiKey +
-            "&start=" + lng + "," + lat +
-            "&end=" + station.lng + "," + station.lat;
-  
-  var xhr = new XMLHttpRequest();
-  xhr.timeout = 8000;
-  xhr.open("GET", url, true);
-  
-  xhr.onload = function() {
-    routingState.routeInFlight = false;
-    if (xhr.status === 200) {
-      try {
-        var data = JSON.parse(xhr.responseText);
-        if (data.features && data.features[0] && data.features[0].properties) {
-          var durationSeconds = data.features[0].properties.summary.duration;
-          var durationMinutes = Math.round(durationSeconds / 60);
-          
-          routingState.lastRoutedLat = lat;
-          routingState.lastRoutedLng = lng;
-          routingState.lastDuration = durationMinutes;
-          
-          console.log("ORS route: " + durationMinutes + " min");
-          sendRouteDurationToWatch(durationMinutes, stationCode, routingState.atStation);
-        }
-      } catch (e) {
-        console.log("ORS parse error: " + e);
-      }
-    } else {
-      console.log("ORS HTTP " + xhr.status);
-    }
-  };
-  
-  xhr.onerror = function() {
-    routingState.routeInFlight = false;
-    console.log("ORS network error");
-  };
-  
-  xhr.ontimeout = function() {
-    routingState.routeInFlight = false;
-    console.log("ORS timeout");
-  };
-  
-  xhr.send();
-}
-
-function requestRoute(lat, lng, stationCode, mode) {
-  if (routingState.routeInFlight) {
-    console.log("Route already in flight");
-    return;
-  }
-  
-  // Check if at station
-  var nowAtStation = checkAtStation(lat, lng, stationCode);
-  routingState.atStation = nowAtStation;
-  
-  if (nowAtStation) {
-    console.log("At station - no routing");
-    sendRouteDurationToWatch(0, stationCode, true);
-    return;
-  }
-  
-  // Check if moved enough to re-route
-  if (routingState.lastRoutedLat !== null && routingState.lastRoutedLng !== null) {
-    var displacement = distanceMeters(lat, lng, routingState.lastRoutedLat, routingState.lastRoutedLng);
-    if (displacement < ROUTE_DISPLACEMENT_THRESHOLD) {
-      console.log("Not moved enough (" + Math.round(displacement) + "m) - keep last duration");
-      return;
-    }
-    console.log("Moved " + Math.round(displacement) + "m - re-routing");
-  }
-  
-  routingState.routeInFlight = true;
-  requestOpenRouteService(lat, lng, stationCode, mode);
-}
 
 Pebble.addEventListener("ready", function(e) {
   console.log("PebbleKit JS ready!");
@@ -316,28 +216,24 @@ Pebble.addEventListener("appmessage", function(e) {
   }
 
   if (e.payload.START_STATION_CODE && e.payload.DEST_STATION_CODE) {
-    var startCode = e.payload.START_STATION_CODE;
-    var destCode = e.payload.DEST_STATION_CODE;
-    requestTrips(startCode, destCode);
+    lastStartCode = e.payload.START_STATION_CODE;
+    lastDestCode = e.payload.DEST_STATION_CODE;
+    requestTrips(lastStartCode, lastDestCode);
   }
 
   if (e.payload.REQUEST_PIN) {
     pinToTimeline(e.payload);
   }
-  
+
   if (e.payload.REQUEST_ROUTE) {
-    if (e.payload.GPS_LAT && e.payload.GPS_LNG && e.payload.START_STATION_CODE) {
-      var lat = e.payload.GPS_LAT / 1000000.0;
-      var lng = e.payload.GPS_LNG / 1000000.0;
-      var stationCode = e.payload.START_STATION_CODE;
-      var mode = e.payload.ROUTE_MODE || 0;
-      requestRoute(lat, lng, stationCode, mode);
-    }
+    var vervoer = e.payload.ROUTE_MODE;
+    if (vervoer == null) vervoer = parseInt(lsGet("settings_vervoer", "0"), 10);
+    else lsSet("settings_vervoer", String(vervoer));
+    handleRouteTick(vervoer);
   }
-  
-  if (e.payload.SETTINGS_VERVOER !== undefined) {
-    setRouteMode(e.payload.SETTINGS_VERVOER);
-  }
+  if (e.payload.SETTINGS_TIJD_MODE != null) lsSet("settings_tijd_mode", String(e.payload.SETTINGS_TIJD_MODE));
+  if (e.payload.SETTINGS_REISTIJD != null) lsSet("settings_reistijd", String(e.payload.SETTINGS_REISTIJD));
+  if (e.payload.SETTINGS_VERVOER != null) lsSet("settings_vervoer", String(e.payload.SETTINGS_VERVOER));
 });
 
 function requestLocationAndFetchStations() {  
@@ -375,9 +271,8 @@ function locationError(err) {
   console.log("Location error: " + err.message);
   console.log("Error code: " + err.code);
   
-  // Send empty station list to trigger fallback to manual selection
   Pebble.sendAppMessage({
-    "STATION_COUNT": 0
+    "ERROR": 1
   });
 }
 
@@ -408,6 +303,7 @@ function processStationData(data) {
 
   var nearbyStations = [];
   for (var j = 0; j < data.payload.length && nearbyStations.length < 8; j++) {
+    rememberStation(data.payload[j]);
     nearbyStations.push({
       code: data.payload[j].code,
       name: data.payload[j].namen.middel
@@ -723,6 +619,8 @@ function fetchNearbyStations(lat, lng) {
 }
 
 function requestTrips(start, destination) {
+  lastStartCode = start;
+  lastDestCode = destination;
   const date_now = new Date();
   var url = BASE_API_URL + TRIP_PATH + "?fromStation=" + start + "&toStation=" + destination + "&dateTime=" + date_now.toISOString();
   sendRequest(url, processTripData);

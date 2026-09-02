@@ -62,7 +62,6 @@ typedef struct {
   Window *countdown_window;
   Window *journey_details_window;
   Window *pin_menu_window;
-  Window *loading_window;
   Window *settings_window;
 } AppWindows;
 
@@ -84,17 +83,6 @@ typedef struct {
   #endif
 } MainWindowUI;
 
-// Loading Window UI Components
-typedef struct {
-  TextLayer *text_layer;
-  Layer *spinner_layer;
-  Layer *bg_blue_layer;
-  Layer *bg_blue_bottom_layer;
-  #ifdef PBL_COLOR
-  Layer *bg_yellow_layer;
-  #endif
-} LoadingWindowUI;
-
 // Countdown Window UI Components
 typedef struct {
   TextLayer *platform_number_layer;
@@ -103,7 +91,6 @@ typedef struct {
   TextLayer *over_time_layer;
   TextLayer *vertrek_label_layer;
   TextLayer *vertrek_time_layer;
-  Layer *route_spinner_layer;
   TextLayer *start_station_layer;
   TextLayer *destination_layer;
   TextLayer *departure_time_layer;
@@ -169,6 +156,7 @@ typedef struct {
   char transfers[MAX_TRIPS][MAX_TRANSFERS_LENGTH];
   char platform[MAX_TRIPS][MAX_PLATFORM_LENGTH];
   char delay[MAX_TRIPS][MAX_DELAY_LENGTH];
+  int arrivals_epoch[MAX_TRIPS];
   int count;
   bool loaded;
 } TripData;
@@ -180,35 +168,25 @@ typedef struct {
   char dest_station_code[5];
   char dest_station_name[MAX_STATION_NAME_LENGTH];
   int selected_trip_index;
-  time_t arrival_time;
 } SelectedJourney;
 
-// Settings
-typedef enum {
-  TIJD_MODE_VERTREK = 0,
-  TIJD_MODE_AANKOMST = 1
-} TijdMode;
+#define PERSIST_TIJD 1
+#define PERSIST_REISTIJD 2
+#define PERSIST_VERVOER 3
 
-typedef enum {
-  VERVOER_LOPEN = 0,
-  VERVOER_FIETS = 1
-} VervoerMode;
+typedef enum { TIJD_MODE_VERTREK = 0, TIJD_MODE_AANKOMST = 1 } TijdMode;
+typedef enum { VERVOER_LOPEN = 0, VERVOER_FIETS = 1 } VervoerMode;
 
-// User Settings
 typedef struct {
   TijdMode tijd_mode;
   bool reistijd_enabled;
   VervoerMode vervoer_mode;
 } UserSettings;
 
-// Routing State
 typedef struct {
-  int travel_duration_minutes;
-  int station_offset_minutes;
-  time_t last_route_time;
-  int last_gps_lat;
-  int last_gps_lng;
-  bool route_in_flight;
+  int travel_duration_min;
+  int station_offset_min;
+  bool have_duration;
   bool at_station;
 } RoutingState;
 
@@ -223,21 +201,15 @@ typedef struct {
   int last_selected_index;
   int selected_alphabet_index;
   time_t departure_time;
-  time_t planned_departure_time;
-  time_t last_departure_time;
-  int delay_minutes;
-  int last_delay_minutes;
   AppTimer *countdown_timer;
   AppTimer *clock_timer;
   AppTimer *fallback_timer;
   AppTimer *spinner_timer;
   AppTimer *refresh_timer;
-  AppTimer *auto_exit_timer;
   PropertyAnimation *content_animation;
   bool is_animating;
   AnimationDirection animation_direction;
   int spinner_angle;
-  bool selecting_start_station;
   bool refresh_in_flight;
   time_t last_button_time;
 } AppState;
@@ -247,7 +219,6 @@ typedef struct {
   AppWindows windows;
   AppMenuLayers menu_layers;
   MainWindowUI main_ui;
-  LoadingWindowUI loading_ui;
   CountdownWindowUI countdown_ui;
   JourneyDetailsUI journey_details_ui;
   DisplayBuffers buffers;
