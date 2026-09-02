@@ -5,6 +5,21 @@ All notable changes to the Trein Pebble app will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.5] - 02-09-2026
+
+### Fixed
+
+- Selecting Naar no longer reboots Flint: dest menu is reused as a slim spinner + "ritten laden" overlay (no second full-chrome window). Spinner timer is cancelled on unload; layer pointers are NULLed after destroy.
+- Inbox cstrings are never strncpy'd from NULL (treated as "").
+- PKJS no longer indexes `legs[transfers]` past the end of the array. Trip times over AppMessage are HH:MM plus epochs (not full ISO). Inbox opened at 1024 bytes.
+
+### Changed
+
+- OVER is the hero LECO 42 clock (full cream width, centered) with a small label above it. VERTREK is a medium clock under it plus On time/+N. Labels are GOTHIC_14/09, never beside the digits.
+- Top/bottom blue bars ~38px. Current time top-left; origin and dest centered with 48px side slots; planned dep/arr HH:MM stay right. Platform sits left of the trip-leg dots.
+- Cream top row is planned `HH:MM > HH:MM`.
+- OVER with Reistijd ja shows `...` until ORS minutes arrive, then leave-by slack (actual dep − now − walk/bike − offset). Digits are green / orange / red. VERTREK stays the planned-dep countdown.
+
 ## [1.7.4] - 02-09-2026
 
 ### Changed

@@ -134,19 +134,59 @@ function addFavouriteFromWatch(code, name) {
   sendFavouritesToWatch();
 }
 var lastStartCode = "", lastDestCode = "", stationCoords = {}, lastRouted = null, cachedDurationMin = null, orsInFlight = false, tripsSentOnce = false, routeTickMissedDest = false;
+var lastGps = null;
 function haversineMeters(a, b, c, d) {
   var P = Math.PI / 180, dLat = (c - a) * P, dLon = (d - b) * P;
   var x = Math.sin(dLat / 2), y = Math.sin(dLon / 2);
   var z = x * x + Math.cos(a * P) * Math.cos(c * P) * y * y;
   return 12742000 * Math.atan2(Math.sqrt(z), Math.sqrt(1 - z));
 }
+function pickCoord(obj, keys) {
+  if (!obj) return null;
+  for (var i = 0; i < keys.length; i++) {
+    if (obj[keys[i]] != null && obj[keys[i]] !== "") return Number(obj[keys[i]]);
+  }
+  return null;
+}
 function rememberStation(st) {
   if (!st || !st.code) return;
-  var lat = st.lat != null ? st.lat : (st.latitude != null ? st.latitude : (st.locatie && st.locatie.lat) || (st.location && st.location.lat));
-  var lng = st.lng != null ? st.lng : (st.lon != null ? st.lon : st.longitude);
-  if (lng == null && st.locatie) lng = st.locatie.lng;
-  if (lng == null && st.location) lng = st.location.lng || st.location.lon;
-  if (lat != null && lng != null) stationCoords[st.code] = { lat: Number(lat), lng: Number(lng) };
+  var lat = pickCoord(st, ["lat", "latitude"]);
+  var lng = pickCoord(st, ["lng", "lon", "longitude"]);
+  if (lat == null) lat = pickCoord(st.locatie, ["lat", "latitude"]) || pickCoord(st.location, ["lat", "latitude"]);
+  if (lng == null) lng = pickCoord(st.locatie, ["lng", "lon", "longitude"]) || pickCoord(st.location, ["lng", "lon", "longitude"]);
+  if ((lat == null || lng == null) && st.payload) {
+    lat = lat != null ? lat : pickCoord(st.payload, ["lat", "latitude"]);
+    lng = lng != null ? lng : pickCoord(st.payload, ["lng", "lon", "longitude"]);
+  }
+  if (lat != null && lng != null && !isNaN(lat) && !isNaN(lng)) {
+    stationCoords[st.code] = { lat: lat, lng: lng };
+    stationCoords[String(st.code).toUpperCase()] = { lat: lat, lng: lng };
+  }
+}
+function coordsFor(code) {
+  if (!code) return null;
+  if (stationCoords[code]) return stationCoords[code];
+  var up = String(code).toUpperCase();
+  if (stationCoords[up]) return stationCoords[up];
+  for (var k in stationCoords) {
+    if (String(k).toUpperCase() === up) return stationCoords[k];
+  }
+  return null;
+}
+function parseOrsDurationSec(data) {
+  if (!data || typeof data !== "object") return null;
+  try {
+    if (data.routes && data.routes[0] && data.routes[0].summary && typeof data.routes[0].summary.duration === "number") {
+      return data.routes[0].summary.duration;
+    }
+  } catch (e) {}
+  try {
+    if (data.features && data.features[0] && data.features[0].properties && data.features[0].properties.summary &&
+        typeof data.features[0].properties.summary.duration === "number") {
+      return data.features[0].properties.summary.duration;
+    }
+  } catch (e) {}
+  return null;
 }
 function sendRouteToWatch(durationMin, atStation) {
   var payload = { "STATION_OFFSET": offsetForCode(lastStartCode) };
@@ -160,32 +200,33 @@ function sendRouteError(code) {
     "ROUTE_ERROR": code
   }, function() {}, function() {});
 }
-function fetchOrsDuration(lat, lng, dest, profile, callback) {
+function fetchOrsDuration(lat, lng, dest, profile, callback, isRetry) {
   var key = getOrsKey();
   if (!key || !dest) { callback(null, key ? 2 : 1); return; }
-  if (orsInFlight) { callback(cachedDurationMin, cachedDurationMin == null ? 0 : 0); return; }
+  if (orsInFlight && !isRetry) {
+    if (cachedDurationMin != null) callback(cachedDurationMin, 0);
+    return;
+  }
   orsInFlight = true;
   var xhr = new XMLHttpRequest();
   xhr.timeout = 8000;
   var url = "https://api.heigit.org/openrouteservice/v2/directions/" + profile;
   xhr.open("POST", url, true);
   xhr.setRequestHeader("Authorization", key);
-  xhr.setRequestHeader("api_key", key);
   xhr.setRequestHeader("Content-Type", "application/json");
   xhr.onload = function() {
     orsInFlight = false;
     console.log("ORS status: " + xhr.status);
     if (xhr.status < 200 || xhr.status >= 300) {
+      if (!isRetry) {
+        fetchOrsDuration(lat, lng, dest, profile, callback, true);
+        return;
+      }
       callback(null, 2);
       return;
     }
     try {
-      var data = JSON.parse(xhr.responseText), sec;
-      if (data.features && data.features[0] && data.features[0].properties && data.features[0].properties.summary) {
-        sec = data.features[0].properties.summary.duration;
-      } else if (data.routes && data.routes[0] && data.routes[0].summary) {
-        sec = data.routes[0].summary.duration;
-      }
+      var sec = parseOrsDurationSec(JSON.parse(xhr.responseText));
       if (typeof sec === "number") {
         lastRouted = { lat: lat, lng: lng };
         cachedDurationMin = Math.max(0, Math.round(sec / 60));
@@ -195,41 +236,68 @@ function fetchOrsDuration(lat, lng, dest, profile, callback) {
     } catch (e) {
       console.log("ORS parse fail");
     }
+    if (!isRetry) {
+      fetchOrsDuration(lat, lng, dest, profile, callback, true);
+      return;
+    }
     callback(null, 2);
   };
   xhr.onerror = xhr.ontimeout = function() {
     orsInFlight = false;
     console.log("ORS status: error/timeout");
+    if (!isRetry) {
+      fetchOrsDuration(lat, lng, dest, profile, callback, true);
+      return;
+    }
     callback(null, 2);
   };
   xhr.send(JSON.stringify({ coordinates: [[lng, lat], [dest.lng, dest.lat]] }));
 }
-function handleRouteTick(vervoer) {
-  var doGps = function(pos) {
-    var lat = pos.coords.latitude, lng = pos.coords.longitude;
+function runRouteFrom(lat, lng, vervoer, force) {
+  lastGps = { lat: lat, lng: lng };
+  var dest = coordsFor(lastStartCode);
+  if (!dest) {
+    routeTickMissedDest = true;
+    lookupStartCoords(lastStartCode);
+    return;
+  }
+  routeTickMissedDest = false;
+  if (haversineMeters(lat, lng, dest.lat, dest.lng) <= 150) {
+    cachedDurationMin = 0;
+    sendRouteToWatch(0, true);
+    return;
+  }
+  if (!getOrsKey()) { sendRouteError(1); return; }
+  var moved = !lastRouted || haversineMeters(lat, lng, lastRouted.lat, lastRouted.lng) > 80;
+  if (!force && !moved && cachedDurationMin != null) {
+    sendRouteToWatch(cachedDurationMin, false);
+    return;
+  }
+  fetchOrsDuration(lat, lng, dest, vervoer === 1 ? "cycling-regular" : "foot-walking", function(mins, err) {
+    if (mins != null) sendRouteToWatch(mins, false);
+    else if (err) sendRouteError(err);
+  });
+}
+function handleRouteTick(vervoer, force) {
+  var afterPos = function(pos) {
     if (tripsSentOnce && lastStartCode && lastDestCode) requestTrips(lastStartCode, lastDestCode);
-    var dest = stationCoords[lastStartCode];
-    if (!dest) { routeTickMissedDest = true; sendRouteToWatch(null, false); return; }
-    routeTickMissedDest = false;
-    if (haversineMeters(lat, lng, dest.lat, dest.lng) <= 150) { cachedDurationMin = 0; sendRouteToWatch(0, true); return; }
-    if (!getOrsKey()) { sendRouteError(1); return; }
-    var moved = !lastRouted || haversineMeters(lat, lng, lastRouted.lat, lastRouted.lng) > 80;
-    if (!moved && cachedDurationMin != null) { sendRouteToWatch(cachedDurationMin, false); return; }
-    if (cachedDurationMin != null) sendRouteToWatch(cachedDurationMin, false);
-    fetchOrsDuration(lat, lng, dest, vervoer === 1 ? "cycling-regular" : "foot-walking", function(mins, err) {
-      if (mins != null) sendRouteToWatch(mins, false);
-      else if (err) sendRouteError(err);
-    });
+    runRouteFrom(pos.coords.latitude, pos.coords.longitude, vervoer, !!force);
   };
   var onErr = function() {
     if (tripsSentOnce && lastStartCode && lastDestCode) requestTrips(lastStartCode, lastDestCode);
-    if (!stationCoords[lastStartCode]) routeTickMissedDest = true;
-    sendRouteToWatch(cachedDurationMin, false);
+    if (lastGps) {
+      runRouteFrom(lastGps.lat, lastGps.lng, vervoer, true);
+      return;
+    }
+    if (!coordsFor(lastStartCode)) {
+      routeTickMissedDest = true;
+      lookupStartCoords(lastStartCode);
+    }
   };
   if (typeof Pebble !== "undefined" && Pebble.platform === "pypkjs") {
-    doGps({ coords: { latitude: 51.58719, longitude: 4.78322 } }); return;
+    afterPos({ coords: { latitude: 51.58719, longitude: 4.78322 } }); return;
   }
-  navigator.geolocation.getCurrentPosition(doGps, onErr, { timeout: 10000, maximumAge: 15000, enableHighAccuracy: false });
+  navigator.geolocation.getCurrentPosition(afterPos, onErr, { timeout: 10000, maximumAge: 15000, enableHighAccuracy: false });
 }
 
 
@@ -323,6 +391,8 @@ Pebble.addEventListener("appmessage", function(e) {
   if (e.payload.START_STATION_CODE && e.payload.DEST_STATION_CODE) {
     lastStartCode = e.payload.START_STATION_CODE;
     lastDestCode = e.payload.DEST_STATION_CODE;
+    lastRouted = null;
+    cachedDurationMin = null;
     requestTrips(lastStartCode, lastDestCode);
   }
 
@@ -354,12 +424,12 @@ Pebble.addEventListener("appmessage", function(e) {
       if (tripsSentOnce && lastStartCode && lastDestCode) requestTrips(lastStartCode, lastDestCode);
       sendRouteToWatch(null, false);
     } else {
-      handleRouteTick(vervoer);
+      handleRouteTick(vervoer, true);
     }
   } else if (e.payload.SETTINGS_VERVOER != null && parseInt(lsGet("settings_reistijd", "1"), 10) !== 0) {
     lastRouted = null;
     cachedDurationMin = null;
-    handleRouteTick(parseInt(e.payload.SETTINGS_VERVOER, 10));
+    handleRouteTick(parseInt(e.payload.SETTINGS_VERVOER, 10), true);
   }
 });
 
@@ -519,19 +589,20 @@ function sendRequest(url, sendToWatchFunction, kind){
 }
 
 function lookupStartCoords(code) {
-  if (!code || stationCoords[code]) return;
+  if (!code) return;
+  if (coordsFor(code)) return;
   var url = BASE_API_URL + "/nsapp-stations/v2?q=" + encodeURIComponent(code) + "&limit=8";
   sendRequest(url, function(data) {
-    var list = data.payload || [];
+    var list = data.payload || data.stations || [];
     if (!Array.isArray(list)) list = list ? [list] : [];
     for (var i = 0; i < list.length; i++) {
       rememberStation(list[i]);
     }
-    if (!stationCoords[code] && list[0]) {
-      rememberStation({ code: code, lat: list[0].lat, lng: list[0].lng });
+    if (!coordsFor(code) && list[0]) {
+      rememberStation({ code: code, lat: list[0].lat, lng: list[0].lng, lon: list[0].lon });
     }
-    if (stationCoords[code]) {
-      handleRouteTick(parseInt(lsGet("settings_vervoer", "0"), 10));
+    if (coordsFor(code)) {
+      handleRouteTick(parseInt(lsGet("settings_vervoer", "0"), 10), true);
     }
   }, "lookup");
 }
@@ -549,10 +620,21 @@ function abbreviateStation(name) {
 }
 
 function extractTime(dateTimeString) {
-  if (!dateTimeString) return "?";
-  // Format is like "2025-01-27T12:34:00+0100", extract HH:MM
-  var match = dateTimeString.match(/T(\d{2}:\d{2})/);
-  return match ? match[1] : "?";
+  if (!dateTimeString) return "";
+  if (dateTimeString === "--:--") return "--:--";
+  if (/^\d{2}:\d{2}$/.test(dateTimeString)) return dateTimeString;
+  var match = String(dateTimeString).match(/T(\d{2}:\d{2})/);
+  return match ? match[1] : "";
+}
+
+function lastTrainLeg(trip) {
+  var legs = trip && trip.legs ? trip.legs : [];
+  if (!legs.length) return null;
+  var idx = trip.transfers;
+  if (typeof idx !== "number" || idx < 0 || idx >= legs.length) {
+    idx = legs.length - 1;
+  }
+  return legs[idx];
 }
 
 function calculateDuration(departureDateTime, arrivalDateTime) {
@@ -573,10 +655,11 @@ function sendLegData(trips) {
   var legQueue = [];
 
   for (var t = 0; t < trips.length; t++) {
-    var legs = trips[t].legs;
+    var legs = (trips[t] && trips[t].legs) ? trips[t].legs : [];
     var legCount = Math.min(legs.length, 4);
 
     for (var l = 0; l < legCount; l++) {
+      if (!legs[l] || !legs[l].origin || !legs[l].destination) continue;
       var departureDateTime = legs[l].origin.actualDateTime || legs[l].origin.plannedDateTime;
       var arrivalDateTime = legs[l].destination.actualDateTime || legs[l].destination.plannedDateTime;
       legQueue.push({
@@ -704,8 +787,8 @@ function processTripData(data) {
       lng: origin.lng != null ? origin.lng : origin.lon
     });
   } catch (e) {}
-  if (routeTickMissedDest && stationCoords[lastStartCode]) {
-    handleRouteTick(parseInt(lsGet("settings_vervoer", "0"), 10));
+  if (routeTickMissedDest && coordsFor(lastStartCode)) {
+    handleRouteTick(parseInt(lsGet("settings_vervoer", "0"), 10), true);
   }
 
   // Send each trip to the watch with a delay to avoid buffer overflow
@@ -713,19 +796,28 @@ function processTripData(data) {
 
   function sendNextTrip() {
     if (sendIndex >= trips.length) {
-      // All trips sent, now send leg data
       sendLegData(trips);
       return;
     }
+    try {
+    var trip = trips[sendIndex];
+    var firstLeg = trip && trip.legs && trip.legs[0];
+    var lastLeg = lastTrainLeg(trip);
+    if (!firstLeg || !firstLeg.origin || !lastLeg || !lastLeg.destination) {
+      console.log("skip trip missing legs");
+      sendIndex++;
+      setTimeout(sendNextTrip, 100);
+      return;
+    }
 
-    var actualDepartureTime = trips[sendIndex].legs[0].origin.actualDateTime;
-    var plannedDepartureTime = trips[sendIndex].legs[0].origin.plannedDateTime;
-    var actualArrivalTime = trips[sendIndex].legs[trips[sendIndex].transfers].destination.actualDateTime;
-    var plannedArrivalTime = trips[sendIndex].legs[trips[sendIndex].transfers].destination.plannedDateTime;
+    var actualDepartureTime = firstLeg.origin.actualDateTime;
+    var plannedDepartureTime = firstLeg.origin.plannedDateTime;
+    var actualArrivalTime = lastLeg.destination.actualDateTime;
+    var plannedArrivalTime = lastLeg.destination.plannedDateTime;
     var tripDelay = "On time";
     if (actualDepartureTime === undefined) {
       tripDelay = "Cancelled";
-      actualDepartureTime = trips[sendIndex].legs[trips[sendIndex].transfers].destination.plannedDateTime;
+      actualDepartureTime = lastLeg.destination.plannedDateTime;
     }
 
     var delay = (Date.parse(actualDepartureTime)-Date.parse(plannedDepartureTime))/60000;
@@ -733,20 +825,15 @@ function processTripData(data) {
       tripDelay = "+" + delay;
     }
 
-    if (trips[sendIndex].status == "CANCELLED") {
+    if (trip.status == "CANCELLED") {
       actualDepartureTime = plannedDepartureTime;
       tripDelay = "Cancelled";
       actualArrivalTime = "--:--";
     }
 
-    if (actualDepartureTime == undefined){
-      console.log('Actual departure time is undefined, value gotten from NS API is:');
-      console.log(trips[sendIndex].legs[0].origin.actualDepartureTime);
-    }
-
-    var origin0 = trips[sendIndex].legs[0].origin;
+    var origin0 = firstLeg.origin;
     var departurePlatform = asStr(origin0.actualTrack || origin0.plannedTrack, "?");
-    var tripTransfers = trips[sendIndex].transfers;
+    var tripTransfers = typeof trip.transfers === "number" ? trip.transfers : 0;
     var currentIndex = sendIndex;
     var actualDepartureTimeEpoch = convertIsoDateToEpoch(actualDepartureTime);
     var plannedDepartureTimeEpoch = convertIsoDateToEpoch(plannedDepartureTime);
@@ -758,15 +845,21 @@ function processTripData(data) {
     var originArrivalEpoch = convertIsoDateToEpoch(originArrivalIso);
     if (!originArrivalEpoch) originArrivalEpoch = plannedDepartureTimeEpoch;
     tripsSentOnce = true;
+    } catch (err) {
+      console.log("trip parse fail: " + err);
+      sendIndex++;
+      setTimeout(sendNextTrip, 100);
+      return;
+    }
 
     Pebble.sendAppMessage({
       "TRIP_INDEX": currentIndex,
-      "TRIP_PLANNED_DEPARTURE_TIME": asStr(plannedDepartureTime, ""),
+      "TRIP_PLANNED_DEPARTURE_TIME": extractTime(plannedDepartureTime),
       "TRIP_PLANNED_DEPARTURE_TIME_EPOCH": plannedDepartureTimeEpoch,
       "TRIP_DEPARTURE_TIME_EPOCH": actualDepartureTimeEpoch,
       "TRIP_ORIGIN_ARRIVAL_EPOCH": originArrivalEpoch,
-      "TRIP_PLANNED_ARRIVAL_TIME": asStr(plannedArrivalTime, ""),
-      "TRIP_ARRIVAL_TIME": asStr(actualArrivalTime, ""),
+      "TRIP_PLANNED_ARRIVAL_TIME": extractTime(plannedArrivalTime),
+      "TRIP_ARRIVAL_TIME": extractTime(actualArrivalTime),
       "TRIP_ARRIVAL_TIME_EPOCH": actualArrivalTimeEpoch,
       "TRIP_TRANSFERS": tripTransfers,
       "TRIP_PLATFORM": departurePlatform,

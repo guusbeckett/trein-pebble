@@ -23,7 +23,7 @@
 #define MAX_STATION_NAME_LENGTH 32
 #define MAX_STATION_CODE_LENGTH 5
 #define MAX_TRIPS 5
-#define MAX_DATE_TIME_LENGTH 25
+#define MAX_DATE_TIME_LENGTH 6
 #define MAX_TRANSFERS_LENGTH 3
 #define MAX_PLATFORM_LENGTH 3
 #define MAX_DELAY_LENGTH 10
@@ -60,7 +60,6 @@ typedef struct {
   Window *dest_menu_window;
   Window *alpha_menu_window;
   Window *countdown_window;
-  Window *trips_loading_window;
   Window *journey_details_window;
   Window *pin_menu_window;
   Window *settings_window;
@@ -84,18 +83,10 @@ typedef struct {
   #endif
 } MainWindowUI;
 
-// Slim dest-select loading chrome (bars + spinner, not full countdown)
+/* Dest-window overlay: spinner + status only (no second window / bars). */
 typedef struct {
-  TextLayer *clock_layer;
-  TextLayer *start_layer;
-  TextLayer *dest_layer;
   TextLayer *status_layer;
   Layer *spinner_layer;
-  Layer *bg_blue_layer;
-  Layer *bg_blue_bottom_layer;
-  #ifdef PBL_COLOR
-  Layer *bg_yellow_layer;
-  #endif
 } TripsLoadingUI;
 
 // Countdown Window UI Components
