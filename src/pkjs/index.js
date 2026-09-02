@@ -15,6 +15,36 @@
 // * along with this program. If not, see <http://www.gnu.org/licenses/>.
 //
 var DEFAULT_API_KEY = "";
+(function queueWatchMessages() {
+  if (typeof Pebble === "undefined" || Pebble.__treinQueued) return;
+  Pebble.__treinQueued = true;
+  var orig = Pebble.sendAppMessage.bind(Pebble);
+  var busy = false;
+  var q = [];
+  function drain() {
+    if (busy || q.length === 0) return;
+    busy = true;
+    var it = q[0];
+    orig(it.p, function() {
+      busy = false;
+      q.shift();
+      if (it.ok) { try { it.ok.apply(null, arguments); } catch (e) {} }
+      setTimeout(drain, 40);
+    }, function() {
+      busy = false;
+      it.n = (it.n || 0) + 1;
+      if (it.n >= 5) {
+        q.shift();
+        if (it.fail) { try { it.fail.apply(null, arguments); } catch (e) {} }
+      }
+      setTimeout(drain, 120);
+    });
+  }
+  Pebble.sendAppMessage = function(payload, ok, fail) {
+    q.push({ p: payload, ok: ok, fail: fail, n: 0 });
+    drain();
+  };
+})();
 var BASE_API_URL = "https://gateway.apiportal.ns.nl";
 var NEAREST_STATIONS_PATH = "/nsapp-stations/v2/nearest";
 var TRIP_PATH = "/reisinformatie-api/api/v3/trips";
@@ -280,11 +310,9 @@ function runRouteFrom(lat, lng, vervoer, force) {
 }
 function handleRouteTick(vervoer, force) {
   var afterPos = function(pos) {
-    if (tripsSentOnce && lastStartCode && lastDestCode) requestTrips(lastStartCode, lastDestCode);
     runRouteFrom(pos.coords.latitude, pos.coords.longitude, vervoer, !!force);
   };
   var onErr = function() {
-    if (tripsSentOnce && lastStartCode && lastDestCode) requestTrips(lastStartCode, lastDestCode);
     if (lastGps) {
       runRouteFrom(lastGps.lat, lastGps.lng, vervoer, true);
       return;
@@ -630,11 +658,20 @@ function extractTime(dateTimeString) {
 function lastTrainLeg(trip) {
   var legs = trip && trip.legs ? trip.legs : [];
   if (!legs.length) return null;
-  var idx = trip.transfers;
-  if (typeof idx !== "number" || idx < 0 || idx >= legs.length) {
-    idx = legs.length - 1;
+  for (var i = legs.length - 1; i >= 0; i--) {
+    var leg = legs[i];
+    if (!leg) continue;
+    var t = "";
+    if (leg.travelType) t = String(leg.travelType);
+    else if (leg.mode) t = String(leg.mode);
+    else if (leg.product && (leg.product.shortCategory || leg.product.categoryCode)) {
+      t = String(leg.product.shortCategory || leg.product.categoryCode);
+    }
+    t = t.toUpperCase();
+    if (leg.walk || t.indexOf("WALK") >= 0 || t.indexOf("LOPEN") >= 0) continue;
+    return leg;
   }
-  return legs[idx];
+  return legs[legs.length - 1];
 }
 
 function calculateDuration(departureDateTime, arrivalDateTime) {
@@ -903,18 +940,20 @@ function toNsIso(ms) {
   return d.getUTCFullYear() + "-" + pad2(d.getUTCMonth() + 1) + "-" + pad2(d.getUTCDate()) +
     "T" + pad2(d.getUTCHours()) + ":" + pad2(d.getUTCMinutes()) + ":" + pad2(d.getUTCSeconds()) + "+0200";
 }
-function emulatorInjectDelayTrip(start, destination) {
+function emulatorSendMockTrip(start, destination, delayed) {
   if (typeof Pebble === "undefined" || Pebble.platform !== "pypkjs") return false;
   var now = Date.now();
-  var plannedDep = now - 2 * 60000;
-  var actualDep = plannedDep + 8 * 60000;
+  var plannedDep = delayed ? now - 2 * 60000 : now + 12 * 60000;
+  var actualDep = delayed ? plannedDep + 8 * 60000 : plannedDep;
   var plannedArr = plannedDep + 81 * 60000;
   var actualArr = actualDep + 81 * 60000;
+  var c = coordsFor(start) || { lat: 51.58719, lng: 4.78322 };
   processTripData({
     trips: [{
       transfers: 0,
       status: "NORMAL",
       legs: [{
+        travelType: "TRAIN",
         origin: {
           stationCode: start,
           plannedDateTime: toNsIso(plannedDep),
@@ -923,8 +962,8 @@ function emulatorInjectDelayTrip(start, destination) {
           actualArrivalDateTime: toNsIso(plannedDep - 3 * 60000),
           plannedTrack: "3",
           actualTrack: "3",
-          lat: 51.5606,
-          lng: 5.0796
+          lat: c.lat,
+          lng: c.lng
         },
         destination: {
           plannedDateTime: toNsIso(plannedArr),
@@ -936,11 +975,24 @@ function emulatorInjectDelayTrip(start, destination) {
   return true;
 }
 
+function emulatorInjectDelayTrip(start, destination) {
+  if (typeof Pebble === "undefined" || Pebble.platform !== "pypkjs") return false;
+  if (lsGet("emu_inject_delay", "") !== "1") return false;
+  return emulatorSendMockTrip(start, destination, true);
+}
+
 function requestTrips(start, destination) {
   lastStartCode = start;
   lastDestCode = destination;
   lookupStartCoords(start);
+  if (parseInt(lsGet("settings_reistijd", "1"), 10) !== 0) {
+    handleRouteTick(parseInt(lsGet("settings_vervoer", "0"), 10), true);
+  }
   if (emulatorInjectDelayTrip(start, destination)) return;
+  if (typeof Pebble !== "undefined" && Pebble.platform === "pypkjs" && !getApiKey()) {
+    emulatorSendMockTrip(start, destination, false);
+    return;
+  }
   var date_now = new Date();
   var url = BASE_API_URL + TRIP_PATH + "?fromStation=" + start + "&toStation=" + destination + "&dateTime=" + date_now.toISOString();
   sendRequest(url, processTripData, "trips");

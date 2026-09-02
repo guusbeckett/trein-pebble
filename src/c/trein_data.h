@@ -168,6 +168,7 @@ typedef struct {
   int planned_departures_epoch[MAX_TRIPS];
   int origin_arrivals_epoch[MAX_TRIPS];
   int count;
+  uint8_t received_mask;
   bool loaded;
 } TripData;
 
@@ -225,6 +226,7 @@ typedef struct {
   time_t last_button_time;
   bool selecting_start_station;
   AppTimer *loading_fail_timer;
+  AppTimer *loading_show_timer;
 } AppState;
 
 // --- Global App Data Instance ---

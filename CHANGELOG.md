@@ -5,6 +5,16 @@ All notable changes to the Trein Pebble app will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.6] - 02-09-2026
+
+### Fixed
+
+- Dest (Naar) select no longer reboots: dest menu is hidden and the spinner is applied on a 10ms timer, never destroyed from the MenuLayer select callback.
+- Countdown heap: dest + nearby menus are popped before countdown load (not re-attached underneath). Load aborts if any layer_create fails.
+- OVER vs VERTREK: dest pick always starts ORS when Reistijd is on. GPS ticks no longer re-fetch NS trips. AppMessage is a single queued outbox so ORS waits behind trips.
+- Last rail leg is used for arrival (not legs[transfers]). Emulator mock trips use the origin station coordinates and no longer swallow every pypkjs trip.
+- 0–2 minute OVER band stays yellow/cream (black digits), not orange.
+
 ## [1.7.5] - 02-09-2026
 
 ### Fixed
