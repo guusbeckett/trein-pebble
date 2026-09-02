@@ -5,3 +5,5 @@ build/*
 
 # local emulator NS key — never commit or ship in pbw
 ns_api_key
+ors_api_key
+flint-emu-countdown.png

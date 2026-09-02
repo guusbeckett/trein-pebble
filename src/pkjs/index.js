@@ -36,9 +36,13 @@ function loadEmulatorDefaultKey() {
   } catch (e) {}
 }
 
+function trimKey(s) {
+  return s ? String(s).replace(/^\s+|\s+$/g, "") : "";
+}
+
 function getApiKey() {
   try {
-    var key = localStorage.getItem("api_key");
+    var key = trimKey(localStorage.getItem("api_key"));
     if (key) {
       return key;
     }
@@ -46,7 +50,7 @@ function getApiKey() {
     console.log("Error reading from localStorage: " + e);
   }
   loadEmulatorDefaultKey();
-  return DEFAULT_API_KEY;
+  return trimKey(DEFAULT_API_KEY);
 }
 
 function getFavourites() {
@@ -64,7 +68,23 @@ function getFavourites() {
 
 function lsGet(k, d) { try { var v = localStorage.getItem(k); return v == null ? d : v; } catch (e) { return d; } }
 function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
-function getOrsKey() { return lsGet("routing_api_key", ""); }
+function loadEmulatorOrsKey() {
+  if (typeof Pebble === "undefined" || Pebble.platform !== "pypkjs") return "";
+  try {
+    var xhr = new XMLHttpRequest();
+    xhr.open("GET", "file:///home/box/.config/trein/ors_api_key", false);
+    xhr.send(null);
+    return trimKey(xhr.responseText);
+  } catch (e) {
+    return "";
+  }
+}
+
+function getOrsKey() {
+  var k = trimKey(lsGet("routing_api_key", ""));
+  if (k) return k;
+  return loadEmulatorOrsKey();
+}
 function offsetForCode(code) {
   var map = {};
   try { map = JSON.parse(lsGet("station_offsets", "{}")); } catch (e) {}
@@ -95,31 +115,55 @@ function sendRouteToWatch(durationMin, atStation) {
   else if (durationMin != null) payload.ROUTE_DURATION = durationMin;
   Pebble.sendAppMessage(payload, function() {}, function() {});
 }
+function sendRouteError(code) {
+  Pebble.sendAppMessage({
+    "STATION_OFFSET": offsetForCode(lastStartCode),
+    "ROUTE_ERROR": code
+  }, function() {}, function() {});
+}
 function fetchOrsDuration(lat, lng, dest, profile, callback) {
   var key = getOrsKey();
-  if (!key || !dest) { callback(null); return; }
-  if (orsInFlight) { callback(cachedDurationMin); return; }
+  if (!key || !dest) { callback(null, key ? 2 : 1); return; }
+  if (orsInFlight) { callback(cachedDurationMin, cachedDurationMin == null ? 0 : 0); return; }
   orsInFlight = true;
   var xhr = new XMLHttpRequest();
   xhr.timeout = 8000;
-  xhr.open("GET", "https://api.heigit.org/openrouteservice/v2/directions/" + profile +
-    "?api_key=" + encodeURIComponent(key) + "&start=" + lng + "," + lat + "&end=" + dest.lng + "," + dest.lat, true);
+  var url = "https://api.heigit.org/openrouteservice/v2/directions/" + profile;
+  xhr.open("POST", url, true);
+  xhr.setRequestHeader("Authorization", key);
+  xhr.setRequestHeader("api_key", key);
+  xhr.setRequestHeader("Content-Type", "application/json");
   xhr.onload = function() {
     orsInFlight = false;
+    console.log("ORS status: " + xhr.status);
+    if (xhr.status < 200 || xhr.status >= 300) {
+      callback(null, 2);
+      return;
+    }
     try {
       var data = JSON.parse(xhr.responseText), sec;
-      if (data.features && data.features[0]) sec = data.features[0].properties.summary.duration;
-      else if (data.routes && data.routes[0]) sec = data.routes[0].summary.duration;
+      if (data.features && data.features[0] && data.features[0].properties && data.features[0].properties.summary) {
+        sec = data.features[0].properties.summary.duration;
+      } else if (data.routes && data.routes[0] && data.routes[0].summary) {
+        sec = data.routes[0].summary.duration;
+      }
       if (typeof sec === "number") {
         lastRouted = { lat: lat, lng: lng };
         cachedDurationMin = Math.max(0, Math.round(sec / 60));
-        callback(cachedDurationMin); return;
+        callback(cachedDurationMin, 0);
+        return;
       }
-    } catch (e) {}
-    callback(null);
+    } catch (e) {
+      console.log("ORS parse fail");
+    }
+    callback(null, 2);
   };
-  xhr.onerror = xhr.ontimeout = function() { orsInFlight = false; callback(null); };
-  xhr.send();
+  xhr.onerror = xhr.ontimeout = function() {
+    orsInFlight = false;
+    console.log("ORS status: error/timeout");
+    callback(null, 2);
+  };
+  xhr.send(JSON.stringify({ coordinates: [[lng, lat], [dest.lng, dest.lat]] }));
 }
 function handleRouteTick(vervoer) {
   var doGps = function(pos) {
@@ -129,12 +173,13 @@ function handleRouteTick(vervoer) {
     if (!dest) { routeTickMissedDest = true; sendRouteToWatch(null, false); return; }
     routeTickMissedDest = false;
     if (haversineMeters(lat, lng, dest.lat, dest.lng) <= 150) { cachedDurationMin = 0; sendRouteToWatch(0, true); return; }
-    if (!getOrsKey()) { sendRouteToWatch(null, false); return; }
+    if (!getOrsKey()) { sendRouteError(1); return; }
     var moved = !lastRouted || haversineMeters(lat, lng, lastRouted.lat, lastRouted.lng) > 80;
     if (!moved && cachedDurationMin != null) { sendRouteToWatch(cachedDurationMin, false); return; }
-    sendRouteToWatch(cachedDurationMin, false);
-    fetchOrsDuration(lat, lng, dest, vervoer === 1 ? "cycling-regular" : "foot-walking", function(mins) {
+    if (cachedDurationMin != null) sendRouteToWatch(cachedDurationMin, false);
+    fetchOrsDuration(lat, lng, dest, vervoer === 1 ? "cycling-regular" : "foot-walking", function(mins, err) {
       if (mins != null) sendRouteToWatch(mins, false);
+      else if (err) sendRouteError(err);
     });
   };
   var onErr = function() {
@@ -205,10 +250,10 @@ Pebble.addEventListener("webviewclosed", function(e) {
   try {
     settings = JSON.parse(decodeURIComponent(e.response));
     if (settings.api_key) {
-      localStorage.setItem("api_key", settings.api_key);
+      localStorage.setItem("api_key", trimKey(settings.api_key));
       console.log("Saved new API key.");
     }
-    if (settings.routing_api_key != null) lsSet("routing_api_key", settings.routing_api_key);
+    if (settings.routing_api_key != null) lsSet("routing_api_key", trimKey(settings.routing_api_key));
     if (settings.station_offsets != null) {
       var off = settings.station_offsets;
       lsSet("station_offsets", typeof off === "string" ? off : JSON.stringify(off));

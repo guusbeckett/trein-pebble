@@ -122,8 +122,8 @@
         station_offsets[oc] = mins;
       }
       var result = {
-        api_key: document.getElementById("api_key").value,
-        routing_api_key: document.getElementById("routing_api_key").value,
+        api_key: document.getElementById("api_key").value.replace(/^\s+|\s+$/g, ""),
+        routing_api_key: document.getElementById("routing_api_key").value.replace(/^\s+|\s+$/g, ""),
         station_offsets: station_offsets,
         favourites: favourites
       };

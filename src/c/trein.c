@@ -316,20 +316,51 @@ static void prv_refresh_timer_callback(void *data) {
   prv_send_route_request();
 }
 
-static GFont prv_over_time_font(bool negative) {
+static bool prv_is_large_display(GRect bounds) {
 #ifdef PBL_ROUND
-  const bool is_large_display = false;
+  (void)bounds;
+  return false;
 #else
-  bool is_large_display = false;
-  if (s_app.windows.countdown_window) {
-    GRect bounds = layer_get_bounds(window_get_root_layer(s_app.windows.countdown_window));
-    is_large_display = (bounds.size.w == 200);
-  }
+#ifdef PBL_PLATFORM_FLINT
+  if (bounds.size.w >= 200 || bounds.size.h >= 200) return true;
+  /* Time 2 firmware is taller than basalt; this SDK still tags flint 144x168. */
+  return (bounds.size.h > 168 || bounds.size.w > 144);
+#else
+  return (bounds.size.w >= 200 || bounds.size.h >= 200);
 #endif
-  if (negative) {
-    return fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD);
+#endif
+}
+
+static bool prv_countdown_is_large(void) {
+  if (!s_app.windows.countdown_window) return false;
+  return prv_is_large_display(layer_get_bounds(window_get_root_layer(s_app.windows.countdown_window)));
+}
+
+static bool prv_leco_safe(const char *s) {
+  if (!s || !*s) return false;
+  for (; *s; s++) {
+    if (*s != ':' && (*s < '0' || *s > '9')) return false;
   }
-  return fonts_get_system_font(is_large_display ? FONT_KEY_LECO_42_NUMBERS : FONT_KEY_LECO_36_BOLD_NUMBERS);
+  return true;
+}
+
+static GFont prv_over_numeric_font(void) {
+  /* LECO glyphs paint outside a too-short frame and strike through VERTREK. */
+  return fonts_get_system_font(prv_countdown_is_large() ? FONT_KEY_LECO_42_NUMBERS : FONT_KEY_LECO_20_BOLD_NUMBERS);
+}
+
+static GFont prv_over_text_font(void) {
+  return fonts_get_system_font(prv_countdown_is_large() ? FONT_KEY_GOTHIC_28_BOLD : FONT_KEY_GOTHIC_24_BOLD);
+}
+
+static void prv_set_over_text(const char *text) {
+  if (!s_app.countdown_ui.over_time_layer || !text) return;
+  if (prv_leco_safe(text)) {
+    text_layer_set_font(s_app.countdown_ui.over_time_layer, prv_over_numeric_font());
+  } else {
+    text_layer_set_font(s_app.countdown_ui.over_time_layer, prv_over_text_font());
+  }
+  text_layer_set_text(s_app.countdown_ui.over_time_layer, text);
 }
 
 static void prv_countdown_timer_callback(void *data) {
@@ -362,7 +393,9 @@ static void prv_countdown_timer_callback(void *data) {
 
 #ifdef PBL_COLOR
   GColor band = GColorYellow;
-  if (hero_vertrek) {
+  if (cancelled) {
+    band = GColorRed;
+  } else if (hero_vertrek) {
     band = GColorWhite;
   } else if ((over_uses_slack && s_app.routing.have_duration) ||
              (!over_uses_slack && s_app.settings.tijd_mode == TIJD_MODE_AANKOMST)) {
@@ -388,29 +421,41 @@ static void prv_countdown_timer_callback(void *data) {
       text_layer_set_text_color(s_app.countdown_ui.vertrek_label_layer, band_fg);
     }
   }
+  if (s_app.countdown_ui.delay_layer) {
+    text_layer_set_text_color(s_app.countdown_ui.delay_layer, band_fg);
+  }
 #endif
 
   layer_set_hidden(text_layer_get_layer(s_app.countdown_ui.vertrek_label_layer), hero_vertrek);
   layer_set_hidden(text_layer_get_layer(s_app.countdown_ui.vertrek_time_layer), hero_vertrek);
   layer_set_hidden(text_layer_get_layer(s_app.countdown_ui.over_label_layer), false);
   layer_set_hidden(text_layer_get_layer(s_app.countdown_ui.over_time_layer), false);
+  if (s_app.countdown_ui.delay_layer) {
+    layer_set_hidden(text_layer_get_layer(s_app.countdown_ui.delay_layer), cancelled);
+  }
 
   if (hero_vertrek) {
     text_layer_set_text(s_app.countdown_ui.over_label_layer, "VERTREK");
   } else {
     text_layer_set_text(s_app.countdown_ui.over_label_layer, "OVER");
     text_layer_set_text(s_app.countdown_ui.vertrek_label_layer, "VERTREK");
-    if (cancelled) {
-      text_layer_set_font(s_app.countdown_ui.over_time_layer, prv_over_time_font(false));
-      text_layer_set_text(s_app.countdown_ui.over_time_layer, "--:--");
-    } else if (over_uses_slack && !s_app.routing.have_duration) {
-      text_layer_set_font(s_app.countdown_ui.over_time_layer, prv_over_time_font(false));
-      text_layer_set_text(s_app.countdown_ui.over_time_layer, "...");
+  }
+
+  if (cancelled) {
+    prv_set_over_text("GEANNULEERD");
+  } else if (hero_vertrek) {
+    /* filled after VERTREK remainder */
+  } else if (over_uses_slack && !s_app.routing.have_duration) {
+    if (s_app.routing.route_error == 1) {
+      prv_set_over_text("geen route");
+    } else if (s_app.routing.route_error == 2) {
+      prv_set_over_text("ORS?");
     } else {
-      text_layer_set_font(s_app.countdown_ui.over_time_layer, prv_over_time_font(over_remain < 0));
-      prv_fmt_remain(s_app.buffers.over_buffer, sizeof(s_app.buffers.over_buffer), over_remain, true);
-      text_layer_set_text(s_app.countdown_ui.over_time_layer, s_app.buffers.over_buffer);
+      prv_set_over_text("...");
     }
+  } else {
+    prv_fmt_remain(s_app.buffers.over_buffer, sizeof(s_app.buffers.over_buffer), over_remain, true);
+    prv_set_over_text(s_app.buffers.over_buffer);
   }
 
   if (cancelled) {
@@ -426,9 +471,9 @@ static void prv_countdown_timer_callback(void *data) {
       return;
     }
   }
-  if (hero_vertrek) {
-    text_layer_set_text(s_app.countdown_ui.over_time_layer, s_app.buffers.vertrek_buffer);
-  } else {
+  if (hero_vertrek && !cancelled) {
+    prv_set_over_text(s_app.buffers.vertrek_buffer);
+  } else if (!hero_vertrek) {
     text_layer_set_text(s_app.countdown_ui.vertrek_time_layer, s_app.buffers.vertrek_buffer);
   }
 
@@ -921,6 +966,7 @@ static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) 
   Tuple *favourite_count_tuple = dict_find(iter, MESSAGE_KEY_FAVOURITE_COUNT);
   Tuple *pin_status_tuple = dict_find(iter, MESSAGE_KEY_PIN_STATUS);
   Tuple *route_duration_tuple = dict_find(iter, MESSAGE_KEY_ROUTE_DURATION);
+  Tuple *route_error_tuple = dict_find(iter, MESSAGE_KEY_ROUTE_ERROR);
   Tuple *station_offset_tuple = dict_find(iter, MESSAGE_KEY_STATION_OFFSET);
   Tuple *trips_failed_tuple = dict_find(iter, MESSAGE_KEY_TRIPS_FAILED);
   Tuple *settings_tijd_tuple = dict_find(iter, MESSAGE_KEY_SETTINGS_TIJD_MODE);
@@ -1132,8 +1178,18 @@ static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) 
       s_app.state.loading_fail_timer = app_timer_register(1500, prv_loading_fail_timeout, NULL);
     }
   }
+  if (route_error_tuple) {
+    s_app.routing.route_error = (uint8_t)route_error_tuple->value->int32;
+    s_app.routing.have_duration = false;
+    s_app.routing.at_station = false;
+    s_app.state.refresh_in_flight = false;
+    if (s_app.countdown_ui.vertrek_time_layer) {
+      prv_update_countdown_display();
+    }
+  }
   if (route_duration_tuple) {
     int d = (int)route_duration_tuple->value->int32;
+    s_app.routing.route_error = 0;
     if (d < 0) {
       s_app.routing.at_station = true;
       s_app.routing.have_duration = true;
@@ -1755,9 +1811,52 @@ static void prv_settings_window_unload(Window *window) {
   layer_set_update_proc(s_app.countdown_ui.trip_leg_layer, prv_trip_leg_layer_update_proc);
   layer_add_child(window_layer, s_app.countdown_ui.trip_leg_layer);
 
+  const bool is_large_display = prv_is_large_display(bounds);
+  const int cream_top = bar_height;
+  const int cream_bottom = bounds.size.h - bar_height;
+  const int x_offset = PBL_IF_ROUND_ELSE(17, 6);
+  const int times_y = PBL_IF_ROUND_ELSE(44, cream_top + 1);
+  const int times_h = is_large_display ? 28 : 18;
+  const int t_w = is_large_display ? 62 : 44;
+  const int arrow_w = is_large_display ? 22 : 16;
+  const int plat_size = is_large_display ? 28 : 24;
+  const int plat_x = bounds.size.w - 18 - plat_size;
+  const int plat_y = times_y + 2;
+  const int over_lab_h = 14;
+  const int vtk_lab_h = 14;
+  const int vtk_time_h = is_large_display ? 26 : 20;
+  const int over_lab_y = times_y + times_h;
+  int over_time_y = over_lab_y + over_lab_h - 2;
+  int over_time_h = (cream_bottom - 4) - vtk_lab_h - vtk_time_h - over_time_y;
+  {
+    int cap = is_large_display ? 48 : 26;
+    int floor = is_large_display ? 42 : 22;
+    if (over_time_h > cap) over_time_h = cap;
+    if (over_time_h < floor) over_time_h = floor;
+  }
+  int vtk_lab_y = over_time_y + over_time_h + 2;
+  int vtk_time_y = vtk_lab_y + vtk_lab_h - 2;
+  if (vtk_time_y + vtk_time_h > cream_bottom - 1) {
+    vtk_time_y = cream_bottom - 1 - vtk_time_h;
+    vtk_lab_y = vtk_time_y - vtk_lab_h + 2;
+    if (vtk_lab_y < over_time_y + 20) {
+      over_time_h = vtk_lab_y - over_time_y;
+      if (over_time_h < 22) over_time_h = 22;
+    }
+  }
+  (void)cream_top; (void)t_w; (void)arrow_w; (void)plat_y;
+  int content_w = plat_x - x_offset - 4;
+  if (content_w < 90) {
+    content_w = bounds.size.w - x_offset - 30;
+  }
+  const int vtk_time_w = is_large_display ? 74 : 56;
+  const int delay_x = x_offset + vtk_time_w;
+  int delay_w = x_offset + content_w - delay_x;
+  if (delay_w < 40) delay_w = 48;
+
   s_app.countdown_ui.start_station_layer = text_layer_create(GRect(0, 10, bounds.size.w, 30));
   text_layer_set_text(s_app.countdown_ui.start_station_layer, s_app.journey.start_station_name);
-  text_layer_set_font(s_app.countdown_ui.start_station_layer, fonts_get_system_font((bounds.size.w == 200) ? FONT_KEY_GOTHIC_28_BOLD : FONT_KEY_GOTHIC_24_BOLD));
+  text_layer_set_font(s_app.countdown_ui.start_station_layer, fonts_get_system_font(is_large_display ? FONT_KEY_GOTHIC_28_BOLD : FONT_KEY_GOTHIC_24_BOLD));
   text_layer_set_text_alignment(s_app.countdown_ui.start_station_layer, GTextAlignmentCenter);
   text_layer_set_background_color(s_app.countdown_ui.start_station_layer, GColorClear);
   text_layer_set_text_color(s_app.countdown_ui.start_station_layer, GColorWhite);
@@ -1765,70 +1864,46 @@ static void prv_settings_window_unload(Window *window) {
 
   s_app.countdown_ui.destination_layer = text_layer_create(GRect(0, bounds.size.h - bar_height, bounds.size.w, 30));
   text_layer_set_text(s_app.countdown_ui.destination_layer, s_app.journey.dest_station_name);
-  text_layer_set_font(s_app.countdown_ui.destination_layer, fonts_get_system_font((bounds.size.w == 200) ? FONT_KEY_GOTHIC_28_BOLD : FONT_KEY_GOTHIC_24_BOLD));
+  text_layer_set_font(s_app.countdown_ui.destination_layer, fonts_get_system_font(is_large_display ? FONT_KEY_GOTHIC_28_BOLD : FONT_KEY_GOTHIC_24_BOLD));
   text_layer_set_text_alignment(s_app.countdown_ui.destination_layer, GTextAlignmentCenter);
   text_layer_set_background_color(s_app.countdown_ui.destination_layer, GColorClear);
   text_layer_set_text_color(s_app.countdown_ui.destination_layer, GColorWhite);
   layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.destination_layer));
 
-  const int platform_y  = PBL_IF_ROUND_ELSE(40, 35);
-  // Center the countdown in the middle of the screen (between top and bottom bars)
-  const int content_height = bounds.size.h - (bar_height * 2); // Height between bars
-  const int countdown_y = bar_height + (content_height / 2) - 25; // Center countdown
-  const int delay_y = bounds.size.h - bar_height - 35; // Close to bottom bar
-
-  // Scale positions for larger displays (emery has 200px width vs 144px on other rect displays)
-  // Note: Pebble Round is excluded as PBL_IF_ROUND_ELSE handles it separately
-  const int x_offset = PBL_IF_ROUND_ELSE(17, (bounds.size.w == 200) ? 33 : 5);
-  const int platform_x_offset = PBL_IF_ROUND_ELSE(0, (bounds.size.w == 200) ? 40 : 0);
-  #ifdef PBL_ROUND
-  const bool is_large_display = false;
-  #else
-  const bool is_large_display = (bounds.size.w == 200);
-  #endif
-
-  s_app.countdown_ui.departure_time_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(17, platform_y + 4, 30, 20), GRect(x_offset, platform_y + 2, is_large_display ? 40 : 30, 20)));
-  text_layer_set_font(s_app.countdown_ui.departure_time_layer, fonts_get_system_font(is_large_display ? FONT_KEY_GOTHIC_18 : FONT_KEY_GOTHIC_14));
+  s_app.countdown_ui.departure_time_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(17, times_y, 40, times_h), GRect(x_offset, times_y, t_w, times_h)));
+  text_layer_set_font(s_app.countdown_ui.departure_time_layer, fonts_get_system_font(is_large_display ? FONT_KEY_GOTHIC_24_BOLD : FONT_KEY_GOTHIC_18));
   text_layer_set_text_alignment(s_app.countdown_ui.departure_time_layer, GTextAlignmentLeft);
   text_layer_set_background_color(s_app.countdown_ui.departure_time_layer, GColorClear);
   text_layer_set_text_color(s_app.countdown_ui.departure_time_layer, GColorBlack);
   layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.departure_time_layer));
 
-  s_app.countdown_ui.time_arrow_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(47, platform_y + 4, 15, 20), GRect(x_offset + (is_large_display ? 40 : 30), platform_y + 2, is_large_display ? 20 : 15, 20)));
-  text_layer_set_font(s_app.countdown_ui.time_arrow_layer, fonts_get_system_font(is_large_display ? FONT_KEY_GOTHIC_18 : FONT_KEY_GOTHIC_14));
+  s_app.countdown_ui.time_arrow_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(57, times_y, 16, times_h), GRect(x_offset + t_w, times_y, arrow_w, times_h)));
+  text_layer_set_font(s_app.countdown_ui.time_arrow_layer, fonts_get_system_font(is_large_display ? FONT_KEY_GOTHIC_24_BOLD : FONT_KEY_GOTHIC_18));
   text_layer_set_text_alignment(s_app.countdown_ui.time_arrow_layer, GTextAlignmentCenter);
   text_layer_set_background_color(s_app.countdown_ui.time_arrow_layer, GColorClear);
   text_layer_set_text_color(s_app.countdown_ui.time_arrow_layer, GColorBlack);
   text_layer_set_text(s_app.countdown_ui.time_arrow_layer, ">");
   layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.time_arrow_layer));
 
-  s_app.countdown_ui.arrival_time_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(62, platform_y + 4, 30, 20), GRect(x_offset + (is_large_display ? 60 : 45), platform_y + 2, is_large_display ? 40 : 30, 20)));
-  text_layer_set_font(s_app.countdown_ui.arrival_time_layer, fonts_get_system_font(is_large_display ? FONT_KEY_GOTHIC_18 : FONT_KEY_GOTHIC_14));
+  s_app.countdown_ui.arrival_time_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(73, times_y, 40, times_h), GRect(x_offset + t_w + arrow_w, times_y, t_w, times_h)));
+  text_layer_set_font(s_app.countdown_ui.arrival_time_layer, fonts_get_system_font(is_large_display ? FONT_KEY_GOTHIC_24_BOLD : FONT_KEY_GOTHIC_18));
   text_layer_set_text_alignment(s_app.countdown_ui.arrival_time_layer, GTextAlignmentLeft);
   text_layer_set_background_color(s_app.countdown_ui.arrival_time_layer, GColorClear);
   text_layer_set_text_color(s_app.countdown_ui.arrival_time_layer, GColorBlack);
   layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.arrival_time_layer));
 
-  const int platform_size = is_large_display ? 32 : 24;
-  s_app.countdown_ui.platform_border_layer = layer_create(PBL_IF_ROUND_ELSE(GRect(118, platform_y + 2, 24, 24), GRect(90 + platform_x_offset, platform_y + 6, platform_size, platform_size)));
+  s_app.countdown_ui.platform_border_layer = layer_create(PBL_IF_ROUND_ELSE(GRect(118, times_y, 24, 24), GRect(plat_x, plat_y, plat_size, plat_size)));
   layer_set_update_proc(s_app.countdown_ui.platform_border_layer, prv_platform_border_update_proc);
   layer_add_child(window_layer, s_app.countdown_ui.platform_border_layer);
 
-  s_app.countdown_ui.platform_number_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(120, platform_y + 4, 20, 24), GRect(92 + platform_x_offset, platform_y + 8, is_large_display ? 28 : 20, is_large_display ? 32 : 24)));
+  s_app.countdown_ui.platform_number_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(120, times_y + 2, 20, 24), GRect(plat_x + 1, plat_y + 2, plat_size - 2, plat_size - 2)));
   text_layer_set_font(s_app.countdown_ui.platform_number_layer, fonts_get_system_font(is_large_display ? FONT_KEY_GOTHIC_24_BOLD : FONT_KEY_GOTHIC_18_BOLD));
   text_layer_set_text_alignment(s_app.countdown_ui.platform_number_layer, GTextAlignmentCenter);
   text_layer_set_background_color(s_app.countdown_ui.platform_number_layer, GColorClear);
   text_layer_set_text_color(s_app.countdown_ui.platform_number_layer, GColorOxfordBlue);
   layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.platform_number_layer));
 
-  s_app.countdown_ui.delay_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(0, delay_y, bounds.size.w, 30), GRect(x_offset, delay_y - 2, bounds.size.w - x_offset - 5, is_large_display ? 40 : 30)));
-  text_layer_set_font(s_app.countdown_ui.delay_layer, fonts_get_system_font(is_large_display ? FONT_KEY_GOTHIC_28_BOLD : FONT_KEY_GOTHIC_24_BOLD));
-  text_layer_set_text_alignment(s_app.countdown_ui.delay_layer, PBL_IF_ROUND_ELSE(GTextAlignmentCenter, GTextAlignmentLeft));
-  text_layer_set_background_color(s_app.countdown_ui.delay_layer, GColorClear);
-  text_layer_set_text_color(s_app.countdown_ui.delay_layer, GColorBlack);
-  layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.delay_layer));
-
-  s_app.countdown_ui.over_label_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(0, countdown_y - 16, bounds.size.w, 18), GRect(x_offset, countdown_y - 16, bounds.size.w - x_offset - 5, 18)));
+  s_app.countdown_ui.over_label_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(0, over_lab_y, bounds.size.w, over_lab_h), GRect(x_offset, over_lab_y, content_w, over_lab_h)));
   text_layer_set_text(s_app.countdown_ui.over_label_layer, "OVER");
   text_layer_set_font(s_app.countdown_ui.over_label_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD));
   text_layer_set_text_alignment(s_app.countdown_ui.over_label_layer, PBL_IF_ROUND_ELSE(GTextAlignmentCenter, GTextAlignmentLeft));
@@ -1836,15 +1911,14 @@ static void prv_settings_window_unload(Window *window) {
   text_layer_set_text_color(s_app.countdown_ui.over_label_layer, GColorBlack);
   layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.over_label_layer));
 
-  s_app.countdown_ui.over_time_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(0, countdown_y, bounds.size.w, 50), GRect(x_offset, countdown_y - 2, bounds.size.w - x_offset - 5, is_large_display ? 60 : 50)));
-  text_layer_set_text(s_app.countdown_ui.over_time_layer, "...");
-  text_layer_set_font(s_app.countdown_ui.over_time_layer, fonts_get_system_font(is_large_display ? FONT_KEY_LECO_42_NUMBERS : FONT_KEY_LECO_36_BOLD_NUMBERS));
+  s_app.countdown_ui.over_time_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(0, over_time_y, bounds.size.w, over_time_h), GRect(x_offset, over_time_y, content_w, over_time_h)));
   text_layer_set_text_alignment(s_app.countdown_ui.over_time_layer, PBL_IF_ROUND_ELSE(GTextAlignmentCenter, GTextAlignmentLeft));
   text_layer_set_background_color(s_app.countdown_ui.over_time_layer, GColorClear);
   text_layer_set_text_color(s_app.countdown_ui.over_time_layer, GColorBlack);
+  prv_set_over_text("...");
   layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.over_time_layer));
 
-  s_app.countdown_ui.vertrek_label_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(0, delay_y - 36, bounds.size.w, 16), GRect(x_offset, delay_y - 36, 70, 16)));
+  s_app.countdown_ui.vertrek_label_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(0, vtk_lab_y, bounds.size.w, vtk_lab_h), GRect(x_offset, vtk_lab_y, content_w, vtk_lab_h)));
   text_layer_set_text(s_app.countdown_ui.vertrek_label_layer, "VERTREK");
   text_layer_set_font(s_app.countdown_ui.vertrek_label_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD));
   text_layer_set_text_alignment(s_app.countdown_ui.vertrek_label_layer, PBL_IF_ROUND_ELSE(GTextAlignmentCenter, GTextAlignmentLeft));
@@ -1852,12 +1926,19 @@ static void prv_settings_window_unload(Window *window) {
   text_layer_set_text_color(s_app.countdown_ui.vertrek_label_layer, GColorBlack);
   layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.vertrek_label_layer));
 
-  s_app.countdown_ui.vertrek_time_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(0, delay_y - 22, bounds.size.w, 22), GRect(x_offset + 70, delay_y - 36, bounds.size.w - x_offset - 75, 22)));
-  text_layer_set_font(s_app.countdown_ui.vertrek_time_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+  s_app.countdown_ui.vertrek_time_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(0, vtk_time_y, bounds.size.w, vtk_time_h), GRect(x_offset, vtk_time_y, vtk_time_w, vtk_time_h)));
+  text_layer_set_font(s_app.countdown_ui.vertrek_time_layer, fonts_get_system_font(is_large_display ? FONT_KEY_GOTHIC_24_BOLD : FONT_KEY_GOTHIC_18_BOLD));
   text_layer_set_text_alignment(s_app.countdown_ui.vertrek_time_layer, PBL_IF_ROUND_ELSE(GTextAlignmentCenter, GTextAlignmentLeft));
   text_layer_set_background_color(s_app.countdown_ui.vertrek_time_layer, GColorClear);
   text_layer_set_text_color(s_app.countdown_ui.vertrek_time_layer, GColorBlack);
   layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.vertrek_time_layer));
+
+  s_app.countdown_ui.delay_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(0, vtk_time_y + 4, bounds.size.w, 22), GRect(delay_x, vtk_time_y + (is_large_display ? 6 : 4), delay_w, vtk_time_h)));
+  text_layer_set_font(s_app.countdown_ui.delay_layer, fonts_get_system_font(is_large_display ? FONT_KEY_GOTHIC_18 : FONT_KEY_GOTHIC_14));
+  text_layer_set_text_alignment(s_app.countdown_ui.delay_layer, PBL_IF_ROUND_ELSE(GTextAlignmentCenter, GTextAlignmentLeft));
+  text_layer_set_background_color(s_app.countdown_ui.delay_layer, GColorClear);
+  text_layer_set_text_color(s_app.countdown_ui.delay_layer, GColorBlack);
+  layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.delay_layer));
 
   s_app.countdown_ui.clock_layer = text_layer_create(PBL_IF_ROUND_ELSE(GRect(0, 0, bounds.size.w, 16), GRect(0, 0, bounds.size.w, is_large_display ? 20 : 16)));
   text_layer_set_font(s_app.countdown_ui.clock_layer, fonts_get_system_font(is_large_display ? FONT_KEY_GOTHIC_18 : FONT_KEY_GOTHIC_14));
@@ -1865,6 +1946,7 @@ static void prv_settings_window_unload(Window *window) {
   text_layer_set_background_color(s_app.countdown_ui.clock_layer, GColorClear);
   text_layer_set_text_color(s_app.countdown_ui.clock_layer, GColorWhite);
   layer_add_child(window_layer, text_layer_get_layer(s_app.countdown_ui.clock_layer));
+
 
 #ifdef PBL_COLOR
   s_mid_band_color = GColorYellow;

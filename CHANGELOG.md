@@ -5,6 +5,20 @@ All notable changes to the Trein Pebble app will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.3] - 02-09-2026
+
+### Changed
+
+- Countdown layout matches the OVER / VERTREK mockup: OVER at the top of the cream band, large LECO timer, VERTREK stacked under it, status small beside VERTREK. Flint / Time 2 uses the larger type when the screen is bigger than basalt.
+- OpenRouteService uses POST JSON to api.heigit.org with an Authorization header (no GET query key).
+
+### Fixed
+
+- LECO blobs and OVER overlapping VERTREK on Pebble Time 2.
+- Cancelled trains show GEANNULEERD (Gothic) on OVER with a red band instead of LECO dashes.
+- ORS failures no longer leave OVER as infinite ...; the watch shows geen route (no key) or ORS? (HTTP/parse). VERTREK still updates from NS.
+- API keys are trimmed when saved and read.
+
 ## [1.7.2] - 02-09-2026
 
 ### Added

@@ -203,6 +203,7 @@ typedef struct {
   int station_offset_min;
   bool have_duration;
   bool at_station;
+  uint8_t route_error; /* 0=ok, 1=no ORS key, 2=http/parse fail */
 } RoutingState;
 
 // Animation Direction
