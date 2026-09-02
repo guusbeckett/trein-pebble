@@ -56,7 +56,7 @@ function offsetForCode(code) {
   for (var k in map) { if (k.toUpperCase() === up) return parseInt(map[k], 10) || 0; }
   return 0;
 }
-var lastStartCode = "", lastDestCode = "", stationCoords = {}, lastRouted = null, cachedDurationMin = null, orsInFlight = false, tripsSentOnce = false;
+var lastStartCode = "", lastDestCode = "", stationCoords = {}, lastRouted = null, cachedDurationMin = null, orsInFlight = false, tripsSentOnce = false, routeTickMissedDest = false;
 function haversineMeters(a, b, c, d) {
   var P = Math.PI / 180, dLat = (c - a) * P, dLon = (d - b) * P;
   var x = Math.sin(dLat / 2), y = Math.sin(dLon / 2);
@@ -108,7 +108,8 @@ function handleRouteTick(vervoer) {
     var lat = pos.coords.latitude, lng = pos.coords.longitude;
     if (lastStartCode && lastDestCode) requestTrips(lastStartCode, lastDestCode);
     var dest = stationCoords[lastStartCode];
-    if (!dest) { sendRouteToWatch(null, false); return; }
+    if (!dest) { routeTickMissedDest = true; sendRouteToWatch(null, false); return; }
+    routeTickMissedDest = false;
     if (haversineMeters(lat, lng, dest.lat, dest.lng) <= 150) { cachedDurationMin = 0; sendRouteToWatch(0, true); return; }
     if (!getOrsKey()) { sendRouteToWatch(null, false); return; }
     var moved = !lastRouted || haversineMeters(lat, lng, lastRouted.lat, lastRouted.lng) > 80;
@@ -120,6 +121,7 @@ function handleRouteTick(vervoer) {
   };
   var onErr = function() {
     if (lastStartCode && lastDestCode) requestTrips(lastStartCode, lastDestCode);
+    if (!stationCoords[lastStartCode]) routeTickMissedDest = true;
     sendRouteToWatch(cachedDurationMin, false);
   };
   if (typeof Pebble !== "undefined" && Pebble.platform === "pypkjs") {
@@ -341,13 +343,11 @@ function reportNsFailure(kind, status) {
   if (kind === "lookup") return;
   var missingKey = !getApiKey() || status === 401 || status === 403;
   if (kind === "trips") {
-    if (tripsSentOnce) {
-      Pebble.sendAppMessage({ "STATION_OFFSET": offsetForCode(lastStartCode) });
+    if (!tripsSentOnce && missingKey) {
+      Pebble.sendAppMessage({ "ERROR": 1 });
       return;
     }
-    if (missingKey) {
-      Pebble.sendAppMessage({ "ERROR": 1 });
-    }
+    Pebble.sendAppMessage({ "STATION_OFFSET": offsetForCode(lastStartCode) });
     return;
   }
   if (missingKey) {
@@ -404,6 +404,9 @@ function lookupStartCoords(code) {
     }
     if (!stationCoords[code] && list[0]) {
       rememberStation({ code: code, lat: list[0].lat, lng: list[0].lng });
+    }
+    if (stationCoords[code]) {
+      handleRouteTick(parseInt(lsGet("settings_vervoer", "0"), 10));
     }
   }, "lookup");
 }
@@ -576,6 +579,9 @@ function processTripData(data) {
       lng: origin.lng != null ? origin.lng : origin.lon
     });
   } catch (e) {}
+  if (routeTickMissedDest && stationCoords[lastStartCode]) {
+    handleRouteTick(parseInt(lsGet("settings_vervoer", "0"), 10));
+  }
 
   // Send each trip to the watch with a delay to avoid buffer overflow
   var sendIndex = 0;

@@ -256,6 +256,9 @@ static void prv_apply_station_choice(const char *code, const char *name) {
         window_stack_contains_window(s_app.windows.alpha_menu_window)) {
       window_stack_pop(true);
     }
+    if (s_app.menu_layers.dest_menu_layer) {
+      menu_layer_reload_data(s_app.menu_layers.dest_menu_layer);
+    }
     return;
   }
   strncpy(s_app.journey.dest_station_code, code, sizeof(s_app.journey.dest_station_code) - 1);
@@ -295,6 +298,22 @@ static void prv_refresh_timer_callback(void *data) {
   prv_send_route_request();
 }
 
+static GFont prv_over_time_font(bool negative) {
+#ifdef PBL_ROUND
+  const bool is_large_display = false;
+#else
+  bool is_large_display = false;
+  if (s_app.windows.countdown_window) {
+    GRect bounds = layer_get_bounds(window_get_root_layer(s_app.windows.countdown_window));
+    is_large_display = (bounds.size.w == 200);
+  }
+#endif
+  if (negative) {
+    return fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD);
+  }
+  return fonts_get_system_font(is_large_display ? FONT_KEY_LECO_42_NUMBERS : FONT_KEY_LECO_36_BOLD_NUMBERS);
+}
+
 static void prv_countdown_timer_callback(void *data) {
   time_t now = time(NULL);
   int idx = s_app.journey.selected_trip_index;
@@ -316,17 +335,32 @@ static void prv_countdown_timer_callback(void *data) {
   }
 
 #ifdef PBL_COLOR
+  GColor band = GColorYellow;
+  if (hero_vertrek) {
+    band = GColorWhite;
+  } else if ((over_uses_slack && s_app.routing.have_duration) ||
+             (!over_uses_slack && s_app.settings.tijd_mode == TIJD_MODE_AANKOMST)) {
+    if (over_remain < 0) band = GColorRed;
+    else if (over_remain <= 120) band = GColorYellow;
+    else band = GColorGreen;
+  }
   if (s_app.countdown_ui.bg_yellow_layer) {
-    GColor band = GColorYellow;
-    if (hero_vertrek) {
-      band = GColorWhite;
-    } else if ((over_uses_slack && s_app.routing.have_duration) ||
-               (!over_uses_slack && s_app.settings.tijd_mode == TIJD_MODE_AANKOMST)) {
-      if (over_remain < 0) band = GColorRed;
-      else if (over_remain <= 120) band = GColorYellow;
-      else band = GColorGreen;
-    }
     prv_set_mid_band(band);
+  }
+  GColor band_fg = gcolor_equal(band, GColorRed) ? GColorWhite : GColorBlack;
+  if (s_app.countdown_ui.over_time_layer) {
+    text_layer_set_text_color(s_app.countdown_ui.over_time_layer, band_fg);
+  }
+  if (s_app.countdown_ui.over_label_layer) {
+    text_layer_set_text_color(s_app.countdown_ui.over_label_layer, band_fg);
+  }
+  if (!hero_vertrek) {
+    if (s_app.countdown_ui.vertrek_time_layer) {
+      text_layer_set_text_color(s_app.countdown_ui.vertrek_time_layer, band_fg);
+    }
+    if (s_app.countdown_ui.vertrek_label_layer) {
+      text_layer_set_text_color(s_app.countdown_ui.vertrek_label_layer, band_fg);
+    }
   }
 #endif
 
@@ -341,10 +375,13 @@ static void prv_countdown_timer_callback(void *data) {
     text_layer_set_text(s_app.countdown_ui.over_label_layer, "OVER");
     text_layer_set_text(s_app.countdown_ui.vertrek_label_layer, "VERTREK");
     if (cancelled) {
+      text_layer_set_font(s_app.countdown_ui.over_time_layer, prv_over_time_font(false));
       text_layer_set_text(s_app.countdown_ui.over_time_layer, "--:--");
     } else if (over_uses_slack && !s_app.routing.have_duration) {
+      text_layer_set_font(s_app.countdown_ui.over_time_layer, prv_over_time_font(false));
       text_layer_set_text(s_app.countdown_ui.over_time_layer, "...");
     } else {
+      text_layer_set_font(s_app.countdown_ui.over_time_layer, prv_over_time_font(over_remain < 0));
       prv_fmt_remain(s_app.buffers.over_buffer, sizeof(s_app.buffers.over_buffer), over_remain, true);
       text_layer_set_text(s_app.countdown_ui.over_time_layer, s_app.buffers.over_buffer);
     }
@@ -738,6 +775,9 @@ static void prv_dest_menu_draw_header_callback(GContext *ctx, const Layer *cell_
   } else {
     header = (section_index == 0) ? "Top Stations" : "By Letter";
   }
+  if (section_index == 0) {
+    header = s_app.state.selecting_start_station ? "Van" : "Naar";
+  }
   #ifdef PBL_ROUND
   GRect bounds = layer_get_bounds(cell_layer);
   graphics_context_set_text_color(ctx, GColorBlack);
@@ -1040,6 +1080,13 @@ static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) 
   if (station_offset_tuple) {
     s_app.routing.station_offset_min = (int)station_offset_tuple->value->int32;
     s_app.state.refresh_in_flight = false;
+    if (!s_app.trips.loaded) {
+      if (s_app.state.spinner_timer) {
+        app_timer_cancel(s_app.state.spinner_timer);
+        s_app.state.spinner_timer = NULL;
+      }
+      prv_push_dest_menu();
+    }
   }
   if (route_duration_tuple) {
     int d = (int)route_duration_tuple->value->int32;
