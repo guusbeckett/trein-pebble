@@ -99,21 +99,21 @@ function getFavourites() {
 function lsGet(k, d) { try { var v = localStorage.getItem(k); return v == null ? d : v; } catch (e) { return d; } }
 function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
 function loadEmulatorOrsKey() {
-  if (typeof Pebble === "undefined" || Pebble.platform !== "pypkjs") return "";
-  try {
-    var xhr = new XMLHttpRequest();
-    xhr.open("GET", "file:///home/box/.config/trein/ors_api_key", false);
-    xhr.send(null);
-    return trimKey(xhr.responseText);
-  } catch (e) {
-    return "";
-  }
+  /* pypkjs is STPyV8, not Node.js - require('fs') doesn't exist.
+   * file:// XHR also fails in pypkjs.
+   * For emulator testing: inject localStorage.setItem("routing_api_key", "YOUR_KEY")
+   * before selecting destination, or use config page to set key. */
+  return "";
 }
 
 function getOrsKey() {
   var k = trimKey(lsGet("routing_api_key", ""));
-  if (k) return k;
-  return loadEmulatorOrsKey();
+  if (k) {
+    console.log("getOrsKey: from localStorage, length=" + k.length);
+    return k;
+  }
+  console.log("getOrsKey: NO KEY (emulator: inject localStorage.setItem('routing_api_key', 'YOUR_KEY'))");
+  return "";
 }
 function offsetForCode(code) {
   var map = {};
@@ -164,7 +164,8 @@ function addFavouriteFromWatch(code, name) {
   sendFavouritesToWatch();
 }
 var lastStartCode = "", lastDestCode = "", stationCoords = {}, lastRouted = null, cachedDurationMin = null, orsInFlight = false, tripsSentOnce = false, routeTickMissedDest = false;
-var lastGps = null, tripsInFlight = false, pendingRouteTick = null, routeAfterTrips = false;
+var lastRouteGps = null, lastStationGps = null, tripsInFlight = false, pendingRouteTick = null, routeAfterTrips = false;
+var lastSentDelay = null;
 function haversineMeters(a, b, c, d) {
   var P = Math.PI / 180, dLat = (c - a) * P, dLon = (d - b) * P;
   var x = Math.sin(dLat / 2), y = Math.sin(dLon / 2);
@@ -233,79 +234,138 @@ function sendRouteError(code) {
     "ROUTE_ERROR": code
   }, function() {}, function() {});
 }
+var orsPendingCallbacks = [];
+var orsTimeoutHandle = null;
 function fetchOrsDuration(lat, lng, dest, profile, callback, isRetry) {
   var key = trimKey(getOrsKey());
-  if (!key || !dest) { callback(null, key ? 2 : 1); return; }
-  if (orsInFlight && !isRetry) {
-    if (cachedDurationMin != null) callback(cachedDurationMin, 0);
+  console.log("fetchOrsDuration START: key=" + (key ? "yes" : "no") + " dest=" + (dest ? "lat=" + dest.lat.toFixed(5) + ",lng=" + dest.lng.toFixed(5) : "no") + " lastStartCode=" + lastStartCode + " GPS=" + (lat != null ? lat.toFixed(5) + "," + lng.toFixed(5) : "none") + " profile=" + profile);
+  
+  if (!key || !dest) {
+    console.log("fetchOrsDuration ABORT: missing key or dest");
+    callback(null, key ? 2 : 1);
     return;
   }
+  
+  if (orsInFlight && !isRetry) {
+    console.log("fetchOrsDuration DEFER: orsInFlight=true, cache=" + cachedDurationMin);
+    if (cachedDurationMin != null) {
+      callback(cachedDurationMin, 0);
+    } else {
+      orsPendingCallbacks.push(callback);
+    }
+    return;
+  }
+  
+  console.log("fetchOrsDuration CALL ORS: " + profile + " from [" + lng.toFixed(5) + "," + lat.toFixed(5) + "] to [" + dest.lng.toFixed(5) + "," + dest.lat.toFixed(5) + "]");
   orsInFlight = true;
+  if (orsTimeoutHandle) clearTimeout(orsTimeoutHandle);
+  orsTimeoutHandle = setTimeout(function() {
+    console.log("ORS timeout reset: orsInFlight stuck, clearing");
+    orsInFlight = false;
+    orsTimeoutHandle = null;
+  }, 8000);
+  
   var xhr = new XMLHttpRequest();
   xhr.timeout = 8000;
   var url = "https://api.heigit.org/openrouteservice/v2/directions/" + profile;
   xhr.open("POST", url, true);
   xhr.setRequestHeader("Authorization", key);
   xhr.setRequestHeader("Content-Type", "application/json");
-  xhr.onload = function() {
+  
+  var handled = false;
+  function handleResponse() {
+    if (handled) return;
+    handled = true;
+    if (orsTimeoutHandle) clearTimeout(orsTimeoutHandle);
+    orsTimeoutHandle = null;
     orsInFlight = false;
-    console.log("ORS status: " + xhr.status);
-    if (xhr.status < 200 || xhr.status >= 300) {
+    
+    var status = xhr.status || 0;
+    console.log("ORS status: " + status + " readyState: " + xhr.readyState);
+    
+    if (status < 200 || status >= 300 || status === 0) {
       if (!isRetry) {
+        console.log("ORS retry on status " + status);
         fetchOrsDuration(lat, lng, dest, profile, callback, true);
         return;
       }
+      console.log("ORS final fail status " + status);
       callback(null, 2);
+      while (orsPendingCallbacks.length > 0) {
+        var cb = orsPendingCallbacks.shift();
+        cb(null, 2);
+      }
       return;
     }
+    
     try {
       var sec = parseOrsDurationSec(JSON.parse(xhr.responseText));
       if (typeof sec === "number") {
         lastRouted = { lat: lat, lng: lng };
         cachedDurationMin = Math.max(0, Math.round(sec / 60));
+        console.log("ORS success: " + sec + "s = " + cachedDurationMin + " min");
         callback(cachedDurationMin, 0);
+        while (orsPendingCallbacks.length > 0) {
+          var cb = orsPendingCallbacks.shift();
+          cb(cachedDurationMin, 0);
+        }
         return;
       }
     } catch (e) {
-      console.log("ORS parse fail");
+      console.log("ORS parse fail: " + e);
     }
+    
     if (!isRetry) {
+      console.log("ORS retry on parse fail");
       fetchOrsDuration(lat, lng, dest, profile, callback, true);
       return;
     }
+    console.log("ORS final fail parse");
     callback(null, 2);
-  };
-  xhr.onerror = xhr.ontimeout = function() {
-    orsInFlight = false;
-    console.log("ORS status: error/timeout");
-    if (!isRetry) {
-      fetchOrsDuration(lat, lng, dest, profile, callback, true);
-      return;
+    while (orsPendingCallbacks.length > 0) {
+      var cb = orsPendingCallbacks.shift();
+      cb(null, 2);
     }
-    callback(null, 2);
+  }
+  
+  xhr.onloadend = handleResponse;
+  xhr.onreadystatechange = function() {
+    if (xhr.readyState === 4) {
+      handleResponse();
+    }
   };
+  
   xhr.send(JSON.stringify({ coordinates: [[lng, lat], [dest.lng, dest.lat]] }));
 }
 function runRouteFrom(lat, lng, vervoer, force) {
-  lastGps = { lat: lat, lng: lng };
+  lastRouteGps = { lat: lat, lng: lng };
   var dest = coordsFor(lastStartCode);
   if (!dest) {
+    console.log("runRouteFrom: missing VAN coords for " + lastStartCode + ", looking up");
     routeTickMissedDest = true;
     lookupStartCoords(lastStartCode);
     return;
   }
   routeTickMissedDest = false;
-  if (haversineMeters(lat, lng, dest.lat, dest.lng) <= 150) {
+  var distM = haversineMeters(lat, lng, dest.lat, dest.lng);
+  if (distM <= 150) {
+    console.log("runRouteFrom: at station " + distM + "m, walk=0");
     cachedDurationMin = 0;
     sendRouteToWatch(0, true);
     return;
   }
-  if (!getOrsKey()) { sendRouteError(1); return; }
+  if (!getOrsKey()) {
+    console.log("runRouteFrom: ORS ABORT NO KEY");
+    sendRouteError(1);
+    return;
+  }
   var moved = !lastRouted || haversineMeters(lat, lng, lastRouted.lat, lastRouted.lng) > 80;
   if (!force && !moved && cachedDurationMin != null) {
+    console.log("runRouteFrom: cached " + cachedDurationMin + " min, moved=" + moved);
     sendRouteToWatch(cachedDurationMin, false);
     return;
   }
+  console.log("runRouteFrom: calling ORS " + (vervoer === 1 ? "bike" : "walk") + " dist=" + distM + "m");
   fetchOrsDuration(lat, lng, dest, vervoer === 1 ? "cycling-regular" : "foot-walking", function(mins, err) {
     if (mins != null) sendRouteToWatch(mins, false);
     else if (err) sendRouteError(err);
@@ -327,11 +387,12 @@ function flushPendingRoute() {
 }
 function handleRouteTick(vervoer, force) {
   if (tripsInFlight) {
+    console.log("handleRouteTick deferred tripsInFlight=1");
     pendingRouteTick = { vervoer: vervoer, force: !!force };
     return;
   }
   function go(lat, lng) {
-    lastGps = { lat: lat, lng: lng };
+    lastRouteGps = { lat: lat, lng: lng };
     runRouteFrom(lat, lng, vervoer, !!force);
   }
   function onFail(attempt) {
@@ -339,26 +400,26 @@ function handleRouteTick(vervoer, force) {
       setTimeout(function() { tryPos(attempt + 1); }, 500);
       return;
     }
-    if (lastGps) {
-      runRouteFrom(lastGps.lat, lastGps.lng, vervoer, true);
+    if (lastRouteGps) {
+      runRouteFrom(lastRouteGps.lat, lastRouteGps.lng, vervoer, true);
       return;
     }
     if (!coordsFor(lastStartCode)) {
       routeTickMissedDest = true;
       lookupStartCoords(lastStartCode);
     }
-    sendRouteError(2);
+    console.log("handleRouteTick GPS fail, no fallback");
   }
   function tryPos(attempt) {
     if (typeof Pebble !== "undefined" && Pebble.platform === "pypkjs") {
-      var g = lastGps || { lat: 51.58719, lng: 4.78322 };
+      var g = lastRouteGps || { lat: 51.58719, lng: 4.78322 };
       go(g.lat, g.lng);
       return;
     }
     navigator.geolocation.getCurrentPosition(
       function(pos) { go(pos.coords.latitude, pos.coords.longitude); },
       function() { onFail(attempt); },
-      { timeout: 8000, maximumAge: 60000, enableHighAccuracy: false }
+      { timeout: 8000, maximumAge: 60000, enableHighAccuracy: true }
     );
   }
   tryPos(0);
@@ -525,7 +586,7 @@ function requestLocationAndFetchStations() {
 function locationSuccess(pos) {
   var lat = pos.coords.latitude;
   var lng = pos.coords.longitude;
-  lastGps = { lat: lat, lng: lng };
+  lastStationGps = { lat: lat, lng: lng };
   fetchNearbyStations(lat, lng);
 }
 
@@ -729,6 +790,8 @@ function calculateDuration(departureDateTime, arrivalDateTime) {
 }
 
 function sendLegData(trips) {
+  flushPendingRoute();
+  
   var legQueue = [];
 
   for (var t = 0; t < trips.length; t++) {
@@ -886,6 +949,8 @@ function processTripData(data) {
 
   function sendNextTrip() {
     if (sendIndex >= trips.length) {
+      /* All TRIP_* messages sent - flush pending route NOW so ORS can run */
+      flushPendingRoute();
       sendLegData(trips);
       return;
     }
@@ -904,7 +969,7 @@ function processTripData(data) {
     var plannedDepartureTime = firstLeg.origin.plannedDateTime;
     var actualArrivalTime = lastLeg.destination.actualDateTime;
     var plannedArrivalTime = lastLeg.destination.plannedDateTime;
-    var tripDelay = "On time";
+    var tripDelay = "";
     if (actualDepartureTime === undefined) {
       tripDelay = "Cancelled";
       actualDepartureTime = lastLeg.destination.plannedDateTime;
@@ -934,6 +999,17 @@ function processTripData(data) {
     var originArrivalIso = origin0.actualArrivalDateTime || origin0.plannedArrivalDateTime || "";
     var originArrivalEpoch = convertIsoDateToEpoch(originArrivalIso);
     if (!originArrivalEpoch) originArrivalEpoch = plannedDepartureTimeEpoch;
+    
+    if (sendIndex === 0) {
+      var delayKey = actualDepartureTimeEpoch;
+      if (lastSentDelay !== null && lastSentDelay !== delayKey && tripDelay !== "On time") {
+        if (typeof Pebble !== "undefined" && Pebble.vibrateOnce) {
+          Pebble.vibrateOnce();
+        }
+      }
+      lastSentDelay = delayKey;
+    }
+    
     tripsSentOnce = true;
     } catch (err) {
       console.log("trip parse fail: " + err);
@@ -942,6 +1018,8 @@ function processTripData(data) {
       return;
     }
 
+    console.log("trip arr planned=" + extractTime(plannedArrivalTime) +
+                " actual=" + extractTime(actualArrivalTime));
     Pebble.sendAppMessage({
       "TRIP_INDEX": currentIndex,
       "TRIP_PLANNED_DEPARTURE_TIME": extractTime(plannedDepartureTime),
@@ -972,7 +1050,7 @@ function processTripData(data) {
 
 function fetchNearbyStations(lat, lng) {
   if (lat != null && lng != null && !isNaN(lat) && !isNaN(lng)) {
-    lastGps = { lat: lat, lng: lng };
+    lastStationGps = { lat: lat, lng: lng };
   }
   if (typeof Pebble !== "undefined" && Pebble.platform === "pypkjs") {
     processStationData({ payload: [
