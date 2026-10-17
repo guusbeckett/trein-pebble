@@ -89,6 +89,7 @@ Bijdragen zijn welkom! Voel je vrij om issues of pull requests in te dienen.
 
 ## Dankbetuigingen
 
+- Tjeerd Ytsma voor het ontwerpen van de NextTrain app die mij heeft geïnspireerd deze app te maken
 - Eric Migicovsky voor het terugbrengen van Pebble
 - Nederlandse Spoorwegen (NS) voor het aanbieden van de API
 - De Pebble gemeenschap

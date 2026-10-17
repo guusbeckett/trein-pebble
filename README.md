@@ -94,6 +94,7 @@ Contributions are welcome! Please feel free to submit issues or pull requests.
 
 ## Acknowledgments
 
+- Tjeerd Ytsma for designing the NextTrain app that inspired me to create this app
 - Eric Migicovsky for bringing back Pebble
 - Nederlandse Spoorwegen (NS) for providing the API
 - The Pebble developer community
