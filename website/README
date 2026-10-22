@@ -1,1 +1,3 @@
-The most up to date website source can be found in the repository https://github.com/guusbeckett/guusbeckett.github.io
+`config.html` is a standalone development copy of the configuration page. The
+app bundles its production configuration page in `src/pkjs/config_page.js`, so
+settings do not depend on an externally hosted website.

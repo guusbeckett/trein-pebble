@@ -5,6 +5,19 @@ All notable changes to the Trein Pebble app will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] - 17-08-2026
+
+### Added
+
+- Data-source adapters for provider-independent nearby-station and trip requests
+- Belgian railway support through iRail, including realtime delays, cancellations, platforms, and transfers
+- Railway network selection and source-specific favourite stations in the bundled settings page
+
+### Changed
+
+- Station identifiers on the watch now support iRail's full stable IDs
+- iRail requests identify the app with the recommended contactable User-Agent
+
 ## [1.7.0] - 18-05-2026
 
 ### Added

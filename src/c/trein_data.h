@@ -21,7 +21,7 @@
 // --- Constants ---
 #define MAX_STATIONS 8
 #define MAX_STATION_NAME_LENGTH 32
-#define MAX_STATION_CODE_LENGTH 5
+#define MAX_STATION_CODE_LENGTH 24
 #define MAX_TRIPS 5
 #define MAX_DATE_TIME_LENGTH 25
 #define MAX_TRANSFERS_LENGTH 3
@@ -157,9 +157,9 @@ typedef struct {
 
 // Selected Journey Information
 typedef struct {
-  char start_station_code[5];
+  char start_station_code[MAX_STATION_CODE_LENGTH];
   char start_station_name[MAX_STATION_NAME_LENGTH];
-  char dest_station_code[5];
+  char dest_station_code[MAX_STATION_CODE_LENGTH];
   char dest_station_name[MAX_STATION_NAME_LENGTH];
   int selected_trip_index;
 } SelectedJourney;
@@ -183,6 +183,7 @@ typedef struct {
   bool is_animating;
   AnimationDirection animation_direction;
   int spinner_angle;
+  bool is_irail;
 } AppState;
 
 // --- Global App Data Instance ---

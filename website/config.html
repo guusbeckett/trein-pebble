@@ -1,0 +1,169 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Trein Configuration</title>
+  <style>
+    body { font: 16px sans-serif; max-width: 520px; margin: auto; padding: 16px; color: #111; }
+    label { display: block; font-weight: bold; margin: 18px 0 6px; }
+    input, select, button { box-sizing: border-box; width: 100%; padding: 10px; font: inherit; }
+    button { margin-top: 16px; color: white; background: #003082; border: 0; border-radius: 4px; }
+    .favourite { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+    .favourite span { flex: 1; }
+    .favourite button { width: auto; margin: 0; background: #c00; padding: 6px 10px; }
+    .hint { color: #555; font-size: 13px; }
+    [hidden] { display: none; }
+    @media (prefers-color-scheme: dark) {
+      body { color: #eee; background: #121212; }
+      input, select { color: #eee; background: #292929; border: 1px solid #666; }
+      .hint { color: #bbb; }
+    }
+  </style>
+</head>
+<body>
+  <h1>Trein</h1>
+
+  <label for="data_source">Railway network</label>
+  <select id="data_source">
+    <option value="ns">Netherlands — NS</option>
+    <option value="irail">Belgium — iRail/NMBS/SNCB</option>
+  </select>
+
+  <div id="ns_settings">
+    <label for="api_key">NS API key</label>
+    <input id="api_key" type="text" autocomplete="off" placeholder="Ocp-Apim subscription key">
+    <p class="hint">Get a key from <a href="https://apiportal.ns.nl/">apiportal.ns.nl</a>. iRail does not require a key.</p>
+  </div>
+
+  <label for="station">Favourite stations</label>
+  <p class="hint">Choose up to five destinations. Belgian destinations are selected from favourites on the watch.</p>
+  <select id="station"><option value="">Loading stations…</option></select>
+  <button id="add" type="button">Add favourite</button>
+  <div id="favourites"></div>
+
+  <button id="save" type="button">Save</button>
+
+  <script>
+    (function() {
+      var MAX_FAVOURITES = 5;
+      var favourites = [];
+      var stations = [];
+      var sourceElement = document.getElementById("data_source");
+      var keyElement = document.getElementById("api_key");
+      var stationElement = document.getElementById("station");
+
+      function parameters() {
+        var result = {};
+        window.location.search.substring(1).split("&").forEach(function(part) {
+          var pair = part.split("=");
+          if (pair[0]) result[pair[0]] = decodeURIComponent(pair.slice(1).join("=") || "");
+        });
+        return result;
+      }
+
+      function renderFavourites() {
+        var container = document.getElementById("favourites");
+        container.innerHTML = "";
+        favourites.forEach(function(favourite, index) {
+          var row = document.createElement("div");
+          row.className = "favourite";
+          var name = document.createElement("span");
+          name.textContent = favourite.name;
+          var remove = document.createElement("button");
+          remove.type = "button";
+          remove.textContent = "Remove";
+          remove.onclick = function() { favourites.splice(index, 1); renderFavourites(); };
+          row.appendChild(name);
+          row.appendChild(remove);
+          container.appendChild(row);
+        });
+      }
+
+      function renderStations() {
+        stationElement.innerHTML = '<option value="">Select a station…</option>';
+        stations.forEach(function(station) {
+          var option = document.createElement("option");
+          option.value = station.code;
+          option.textContent = station.name;
+          stationElement.appendChild(option);
+        });
+      }
+
+      function request(url, headers, done) {
+        var xhr = new XMLHttpRequest();
+        xhr.open("GET", url, true);
+        Object.keys(headers || {}).forEach(function(name) { xhr.setRequestHeader(name, headers[name]); });
+        xhr.onload = function() {
+          if (xhr.status >= 200 && xhr.status < 300) done(null, JSON.parse(xhr.responseText));
+          else done(new Error("HTTP " + xhr.status));
+        };
+        xhr.onerror = function() { done(new Error("Network error")); };
+        xhr.send();
+      }
+
+      function loadStations() {
+        var source = sourceElement.value;
+        stations = [];
+        stationElement.innerHTML = '<option value="">Loading stations…</option>';
+        document.getElementById("ns_settings").hidden = source !== "ns";
+
+        var url = source === "irail" ?
+          "https://api.irail.be/stations/?format=json&lang=nl" :
+          "https://gateway.apiportal.ns.nl/reisinformatie-api/api/v2/stations";
+        var headers = source === "ns" ? {"Ocp-Apim-Subscription-Key": keyElement.value} : {};
+        if (source === "ns" && !keyElement.value) {
+          stationElement.innerHTML = '<option value="">Enter an NS API key first</option>';
+          return;
+        }
+
+        request(url, headers, function(error, data) {
+          if (error) {
+            stationElement.innerHTML = '<option value="">Could not load stations</option>';
+            return;
+          }
+          var list = source === "irail" ? (data.station || []) : (data.payload || []);
+          stations = list.map(function(station) {
+            return source === "irail" ?
+              {code: station.id, name: station.name || station.standardname} :
+              {code: station.code, name: station.namen ? station.namen.middel : station.name};
+          }).filter(function(station) { return station.code && station.name; });
+          stations.sort(function(left, right) { return left.name.localeCompare(right.name); });
+          renderStations();
+        });
+      }
+
+      document.getElementById("add").onclick = function() {
+        if (!stationElement.value || favourites.length >= MAX_FAVOURITES) return;
+        var selected = stations.filter(function(station) { return station.code === stationElement.value; })[0];
+        if (!selected || favourites.some(function(item) { return item.code === selected.code; })) return;
+        favourites.push(selected);
+        renderFavourites();
+      };
+
+      sourceElement.onchange = function() {
+        favourites = [];
+        renderFavourites();
+        loadStations();
+      };
+      keyElement.onchange = loadStations;
+
+      document.getElementById("save").onclick = function() {
+        var settings = {
+          data_source: sourceElement.value,
+          api_key: keyElement.value,
+          favourites: favourites
+        };
+        document.location = "pebblejs://close#" + encodeURIComponent(JSON.stringify(settings));
+      };
+
+      var params = parameters();
+      sourceElement.value = params.data_source === "irail" ? "irail" : "ns";
+      keyElement.value = params.api_key || "";
+      try { favourites = JSON.parse(params.favourites || "[]"); } catch (error) { favourites = []; }
+      renderFavourites();
+      loadStations();
+    }());
+  </script>
+</body>
+</html>

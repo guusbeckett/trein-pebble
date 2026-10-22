@@ -553,10 +553,12 @@ static void prv_alpha_menu_window_load(Window *window) {
 static void prv_alpha_menu_window_unload(Window *window) { menu_layer_destroy(s_app.menu_layers.alpha_menu_layer); }
 
 static uint16_t prv_dest_menu_get_num_sections_callback(MenuLayer *menu_layer, void *context) {
+  if (s_app.state.is_irail) return 1;
   return (s_app.favourites.count > 0) ? 3 : 2;
 }
 
 static uint16_t prv_dest_menu_get_num_rows_callback(MenuLayer *menu_layer, uint16_t section_index, void *context) {
+  if (s_app.state.is_irail) return s_app.favourites.count > 0 ? s_app.favourites.count : 1;
   if (s_app.favourites.count > 0) {
     if (section_index == 0) return s_app.favourites.count;
     if (section_index == 1) return NUM_TOP_STATIONS;
@@ -571,7 +573,9 @@ static int16_t prv_dest_menu_get_header_height_callback(MenuLayer *menu_layer, u
 
 static void prv_dest_menu_draw_header_callback(GContext *ctx, const Layer *cell_layer, uint16_t section_index, void *context) {
   const char *header;
-  if (s_app.favourites.count > 0) {
+  if (s_app.state.is_irail) {
+    header = "Belgian favourites";
+  } else if (s_app.favourites.count > 0) {
     if (section_index == 0) header = "Favourites";
     else if (section_index == 1) header = "Top Stations";
     else header = "By Letter";
@@ -591,6 +595,12 @@ static void prv_dest_menu_draw_header_callback(GContext *ctx, const Layer *cell_
 static void prv_dest_menu_draw_row_callback(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index, void *context) {
   int section = cell_index->section;
   int row = cell_index->row;
+
+  if (s_app.state.is_irail) {
+    menu_cell_basic_draw(ctx, cell_layer,
+                         s_app.favourites.count > 0 ? s_app.favourites.names[row] : "Add in settings", NULL, NULL);
+    return;
+  }
 
   if (s_app.favourites.count > 0) {
     if (section == 0) {
@@ -613,6 +623,14 @@ static void prv_dest_menu_draw_row_callback(GContext *ctx, const Layer *cell_lay
 static void prv_dest_menu_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {
   int section = cell_index->section;
   int row = cell_index->row;
+
+  if (s_app.state.is_irail) {
+    if (s_app.favourites.count == 0) return;
+    strncpy(s_app.journey.dest_station_code, s_app.favourites.codes[row], sizeof(s_app.journey.dest_station_code) - 1);
+    strncpy(s_app.journey.dest_station_name, s_app.favourites.names[row], sizeof(s_app.journey.dest_station_name) - 1);
+    prv_send_trip_request();
+    return;
+  }
 
   if (s_app.favourites.count > 0) {
     if (section == 0) {
@@ -691,10 +709,27 @@ static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) 
   Tuple *favourite_code_tuple = dict_find(iter, MESSAGE_KEY_FAVOURITE_CODE);
   Tuple *favourite_name_tuple = dict_find(iter, MESSAGE_KEY_FAVOURITE_NAME);
   Tuple *favourite_count_tuple = dict_find(iter, MESSAGE_KEY_FAVOURITE_COUNT);
+  Tuple *data_source_tuple = dict_find(iter, MESSAGE_KEY_DATA_SOURCE);
   Tuple *pin_status_tuple = dict_find(iter, MESSAGE_KEY_PIN_STATUS);
+
+  if (data_source_tuple) {
+    bool is_irail = data_source_tuple->value->int32 == 1;
+    if (s_app.state.is_irail != is_irail) {
+      s_app.state.is_irail = is_irail;
+      s_app.favourites.count = 0;
+      s_app.favourites.loaded = false;
+      s_app.stations.count = 0;
+      s_app.stations.loaded = false;
+    }
+  }
+
+  if (favourite_count_tuple && favourite_count_tuple->value->int32 == 0) {
+    s_app.favourites.count = 0;
+    s_app.favourites.loaded = true;
+  }
   
   if (error_tuple) {
-    text_layer_set_text(s_app.main_ui.text_layer, "Add API key in settings...");
+    text_layer_set_text(s_app.main_ui.text_layer, "Check settings or network...");
     return;
   }
 

@@ -2,7 +2,7 @@
   "name": "Trein",
   "author": "Guus H. Beckett",
   "description": "A Pebble watchapp that shows a countdown to your next train, train times and platforms",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "keywords": [
     "pebble-app",
     "pebble",
@@ -10,6 +10,9 @@
     "ns",
     "nederlandse-spoorwegen",
     "nederland",
+    "Belgium",
+    "nmbs",
+    "België",
     "netherlands",
     "commute",
     "train"
@@ -62,6 +65,7 @@
       "FAVOURITE_CODE",
       "FAVOURITE_NAME",
       "FAVOURITE_COUNT",
+      "DATA_SOURCE",
       "REQUEST_PIN",
       "PIN_TRIP_INDEX",
       "PIN_LEG_INDEX",
